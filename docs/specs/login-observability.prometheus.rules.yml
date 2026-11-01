@@ -1,0 +1,65 @@
+# Приложение к спецификации login-observability.md, редакция комплекта 0.28.
+# Контракт расчёта, не автоматически подключённая production-конфигурация.
+# Требует согласованного преобразования имён OTLP и labels node/environment.
+# Доли находятся в диапазоне 0..1; цель SLO — >= 0.90.
+groups:
+  - name: mis-login-sli
+    interval: 60s
+    rules:
+      - record: mis_login:successful:increase1h
+        expr: |
+          sum by (environment, node) (
+            increase(mis_login_scenarios_completed_total{outcome="success"}[1h])
+          )
+
+      - record: mis_login:eligible:increase1h
+        expr: |
+          sum by (environment, node) (
+            increase(mis_login_scenarios_completed_total{outcome=~"success|technical_error"}[1h])
+          )
+
+      - record: mis_login:technical_errors_by_mode:increase1h
+        expr: |
+          sum by (environment, node, mode) (
+            increase(mis_login_scenarios_technical_errors_total{mode=~"credentials|existing_session"}[1h])
+          )
+
+      - record: mis_login:successful_measured_by_mode:increase1h
+        expr: |
+          sum by (environment, node, mode) (
+            increase(mis_login_scenario_duration_seconds_count{mode=~"credentials|existing_session"}[1h])
+          )
+          or on (environment, node, mode)
+          (0 * mis_login:technical_errors_by_mode:increase1h)
+
+      - record: mis_login:successful_timely_by_mode:increase1h
+        expr: |
+          (
+            sum by (environment, node, mode) (
+              increase(mis_login_scenario_duration_seconds_bucket{mode="credentials",le="30"}[1h])
+            )
+            or on (environment, node, mode)
+            sum by (environment, node, mode) (
+              increase(mis_login_scenario_duration_seconds_bucket{mode="existing_session",le="5"}[1h])
+            )
+          )
+          or on (environment, node, mode)
+          (0 * mis_login:technical_errors_by_mode:increase1h)
+
+      - record: mis_login:sli_success:ratio1h
+        expr: |
+          mis_login:successful:increase1h
+          / on (environment, node)
+          (mis_login:eligible:increase1h > 0)
+
+      - record: mis_login:sli_timely_by_mode:ratio1h
+        expr: |
+          mis_login:successful_timely_by_mode:increase1h
+          / on (environment, node, mode)
+          (
+            (
+              mis_login:successful_measured_by_mode:increase1h
+              + on (environment, node, mode)
+              mis_login:technical_errors_by_mode:increase1h
+            ) > 0
+          )

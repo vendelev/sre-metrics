@@ -1,0 +1,167 @@
+# Редакция комплекта 0.28. Выполнение: promtool test rules <этот файл>.
+# Приросты пропорциональны; это тесты долей, не точного журнала событий.
+rule_files:
+  - login-observability.prometheus.rules.yml
+evaluation_interval: 1m
+tests:
+  - name: both-modes-and-excluded-outcomes
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="success"}'
+        values: '0+28x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="technical_error"}'
+        values: '0+2x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="rejected"}'
+        values: '0+100x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="unknown"}'
+        values: '0+100x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="credentials"}'
+        values: '0+1x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="existing_session"}'
+        values: '0+1x60'
+      - series: 'mis_login_scenario_duration_seconds_count{environment="test",node="node-1",mode="credentials"}'
+        values: '0+9x60'
+      - series: 'mis_login_scenario_duration_seconds_count{environment="test",node="node-1",mode="existing_session"}'
+        values: '0+19x60'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30"}'
+        values: '0+8x60'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="existing_session",le="5"}'
+        values: '0+18x60'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="60"}'
+        values: '0+9x60'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1"}'
+            value: 0.9333333333333333
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1",mode="credentials"}'
+            value: 0.8
+          - labels: '{environment="test",node="node-1",mode="existing_session"}'
+            value: 0.9
+
+  - name: only-errors-without-histogram
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="success"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="technical_error"}'
+        values: '0+2x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="credentials"}'
+        values: '0+2x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="existing_session"}'
+        values: '0+0x60'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1"}'
+            value: 0
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1",mode="credentials"}'
+            value: 0
+
+  - name: zero-denominators
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="success"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="technical_error"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="credentials"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="existing_session"}'
+        values: '0+0x60'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h'
+        eval_time: 1h
+        exp_samples: []
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h'
+        eval_time: 1h
+        exp_samples: []
+
+  - name: absent-source
+    interval: 1m
+    input_series: []
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h'
+        eval_time: 1h
+        exp_samples: []
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h'
+        eval_time: 1h
+        exp_samples: []
+
+  - name: nodes-and-environments-are-independent
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="production",node="node-1",outcome="success"}'
+        values: '0+10x60'
+      - series: 'mis_login_scenarios_completed_total{environment="production",node="node-1",outcome="technical_error"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_completed_total{environment="production",node="node-2",outcome="success"}'
+        values: '0+8x60'
+      - series: 'mis_login_scenarios_completed_total{environment="production",node="node-2",outcome="technical_error"}'
+        values: '0+2x60'
+      - series: 'mis_login_scenarios_completed_total{environment="development",node="node-1",outcome="success"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_completed_total{environment="development",node="node-1",outcome="technical_error"}'
+        values: '0+10x60'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="production",node="node-1"}'
+            value: 1
+          - labels: '{environment="production",node="node-2"}'
+            value: 0.8
+          - labels: '{environment="development",node="node-1"}'
+            value: 0
+
+  - name: counter-reset
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="success",instance="instance-1"}'
+        values: '0+9x30 0+9x29'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="technical_error",instance="instance-1"}'
+        values: '0+1x30 0+1x29'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="credentials",instance="instance-1"}'
+        values: '0+1x30 0+1x29'
+      - series: 'mis_login_scenario_duration_seconds_count{environment="test",node="node-1",mode="credentials",instance="instance-1"}'
+        values: '0+9x30 0+9x29'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30",instance="instance-1"}'
+        values: '0+8x30 0+8x29'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1"}'
+            value: 0.9
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1",mode="credentials"}'
+            value: 0.8
+
+  - name: success-without-measurable-duration
+    interval: 1m
+    input_series:
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="success"}'
+        values: '0+7x60'
+      - series: 'mis_login_scenarios_completed_total{environment="test",node="node-1",outcome="technical_error"}'
+        values: '0+0x60'
+      - series: 'mis_login_scenarios_technical_errors_total{environment="test",node="node-1",mode="credentials"}'
+        values: '0+0x60'
+    promql_expr_test:
+      - expr: 'mis_login:sli_success:ratio1h * 1'
+        eval_time: 1h
+        exp_samples:
+          - labels: '{environment="test",node="node-1"}'
+            value: 1
+      - expr: 'mis_login:sli_timely_by_mode:ratio1h'
+        eval_time: 1h
+        exp_samples: []

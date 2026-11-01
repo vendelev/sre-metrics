@@ -1,0 +1,400 @@
+openapi: 3.1.1
+info:
+  title: MIS Login Observability Events API
+  version: 1.0.0
+  description: |
+    Контракт событий версии 1. Редакция комплекта спецификации — 0.28, на согласовании.
+    API измеряет сценарии, но не управляет авторизацией. Каждое событие отправляется
+    синхронно один раз с общим timeout 1 секунда; ошибки не прерывают вход.
+    Хранение только в памяти, 204 не гарантирует сохранность после перезапуска
+    или доставку в мониторинг. Область дедупликации — события, ещё хранимые экземпляром Go.
+    При достижении шага проверки состояния истёкшая ранее принятая запись закрывается
+    как unknown независимо от последующего отказа новому событию. Поэтому 503 не сохраняет
+    новое событие, но не отменяет самостоятельное закрытие по deadline (BR-55).
+    Схема не описывает устройство Go-сервиса.
+    Retention закрытой записи — логическая граница: при now_Go >= времени закрытия Go
+    + 15 минут запись и её event_id атомарно считаются удалёнными до дедупликации
+    и проверки фактов, независимо от фоновой очистки (BR-56). Агрегаты сохраняются.
+x-contract-revision: '0.28'
+x-contract-status: review
+x-open-decisions: []
+security: []
+tags:
+  - name: Events
+    description: Приём фактов от доверенных МИС и Auth в Docker-сети ноды.
+paths:
+  /events:
+    post:
+      operationId: acceptLoginEvent
+      tags: [Events]
+      summary: Принять один факт сценария входа
+      description: |
+        Отдельной HTTP-аутентификации нет. source — утверждение отправителя,
+        не удостоверенная идентичность. Путь не публикуется на хост или через Traefik.
+        Методы, отличные от POST, получают 405 с Allow: POST.
+
+        Порядок: метод, Content-Type, размер тела, JSON/схема, логическое истечение
+        хранения закрытых записей, сохранённый event_id,
+        возраст нового события, факты/состояние, вместимость, приём.
+        Детальная таблица и самостоятельное закрытие по expiry — в разделе 5 спецификации.
+        Тело UTF-8, один объект, без повторяющихся ключей и неизвестных полей.
+        MIME-тип application/json допускает параметры, например charset=utf-8.
+        Начальный настраиваемый лимит тела — 4096 байт, включая JSON-пробелы.
+        Это ограничение HTTP, а не maxLength строкового поля JSON Schema.
+
+        Для нового event_id допустим now_Go - 30 минут <= occurred_at <= now_Go + 30 секунд.
+        Для сохранённого event_id после структурных проверок сначала определяется
+        совпадение или конфликт, без повторной проверки возраста.
+        Равенство событий — равенство разобранных значений всех полей, не JSON-байтов.
+        Идентификаторы сравниваются как UUID; порядок полей и JSON-пробелы несущественны.
+        Реальный момент времени не извлекается из UUID v7.
+        Проверка retention и дальнейшие решения используют единое now_Go внутри
+        неделимой операции. При истёкшем retention прежние ID и факты не участвуют
+        в проверках, даже если запись физически ещё не удалена. Событие проверяется
+        как новое, включая возраст; истёкшие закрытые записи не занимают общий лимит.
+        Истечение хранения не меняет агрегаты и не отменяется последующим отказом событию.
+      x-default-max-body-bytes: 4096
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginEvent'
+            examples:
+              started:
+                summary: МИС начинает сценарий
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000101
+                  scenario_id: 019a0000-0000-7000-8000-000000000001
+                  occurred_at: '2026-10-31T12:00:00.000Z'
+                  source: mis
+                  type: login_started
+              credentials:
+                summary: Auth потребовал ввод данных
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000102
+                  scenario_id: 019a0000-0000-7000-8000-000000000001
+                  occurred_at: '2026-10-31T12:00:01.000Z'
+                  source: auth
+                  type: login_mode_determined
+                  mode: credentials
+              existingSession:
+                summary: Вариант без ввода данных в другой цепочке
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000103
+                  scenario_id: 019a0000-0000-7000-8000-000000000002
+                  occurred_at: '2026-10-31T12:00:01.000Z'
+                  source: auth
+                  type: login_mode_determined
+                  mode: existing_session
+              succeeded:
+                summary: Защищённая страница сформирована
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000104
+                  scenario_id: 019a0000-0000-7000-8000-000000000001
+                  occurred_at: '2026-10-31T12:00:20.000Z'
+                  source: mis
+                  type: login_succeeded
+              failed:
+                summary: Техническая ошибка в отдельной цепочке
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000105
+                  scenario_id: 019a0000-0000-7000-8000-000000000003
+                  occurred_at: '2026-10-31T12:00:03.000Z'
+                  source: auth
+                  type: login_failed
+              rejected:
+                summary: Штатный отказ в отдельной цепочке
+                value:
+                  version: 1
+                  event_id: 019a0000-0000-7000-8000-000000000106
+                  scenario_id: 019a0000-0000-7000-8000-000000000004
+                  occurred_at: '2026-10-31T12:00:04.000Z'
+                  source: mis
+                  type: login_rejected
+      responses:
+        '204':
+          description: |
+            Событие обработано в памяти либо подтверждён повтор без повторного учёта.
+            Тело отсутствует. Не подтверждает доставку OTLP или scrape Prometheus.
+        '400':
+          $ref: '#/components/responses/InvalidEvent'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/EventConflict'
+        '410':
+          $ref: '#/components/responses/ScenarioExpired'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/CapacityExceeded'
+components:
+  schemas:
+    EventVersion:
+      type: integer
+      const: 1
+    UuidV7:
+      type: string
+      format: uuid
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+      description: UUID v7 в форме 8-4-4-4-12, регистр hex несущественен.
+    OccurredAt:
+      type: string
+      format: date-time
+      minLength: 24
+      maxLength: 24
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      description: |
+        Реальная календарная дата RFC 3339 в UTC, ровно три знака миллисекунд.
+        Паттерн не заменяет проверку даты. Проверка возраста выполняется Go отдельно.
+    LoginMode:
+      type: string
+      enum: [credentials, existing_session]
+    LoginEvent:
+      oneOf:
+        - $ref: '#/components/schemas/LoginStarted'
+        - $ref: '#/components/schemas/LoginModeDetermined'
+        - $ref: '#/components/schemas/LoginSucceeded'
+        - $ref: '#/components/schemas/LoginFailed'
+        - $ref: '#/components/schemas/LoginRejected'
+      discriminator:
+        propertyName: type
+        mapping:
+          login_started: '#/components/schemas/LoginStarted'
+          login_mode_determined: '#/components/schemas/LoginModeDetermined'
+          login_succeeded: '#/components/schemas/LoginSucceeded'
+          login_failed: '#/components/schemas/LoginFailed'
+          login_rejected: '#/components/schemas/LoginRejected'
+    LoginStarted:
+      type: object
+      additionalProperties: false
+      required: [version, event_id, scenario_id, occurred_at, source, type]
+      properties:
+        version:
+          $ref: '#/components/schemas/EventVersion'
+        event_id:
+          $ref: '#/components/schemas/UuidV7'
+        scenario_id:
+          $ref: '#/components/schemas/UuidV7'
+        occurred_at:
+          $ref: '#/components/schemas/OccurredAt'
+        source:
+          type: string
+          const: mis
+        type:
+          type: string
+          const: login_started
+    LoginModeDetermined:
+      type: object
+      additionalProperties: false
+      required: [version, event_id, scenario_id, occurred_at, source, type, mode]
+      properties:
+        version:
+          $ref: '#/components/schemas/EventVersion'
+        event_id:
+          $ref: '#/components/schemas/UuidV7'
+        scenario_id:
+          $ref: '#/components/schemas/UuidV7'
+        occurred_at:
+          $ref: '#/components/schemas/OccurredAt'
+        source:
+          type: string
+          const: auth
+        type:
+          type: string
+          const: login_mode_determined
+        mode:
+          $ref: '#/components/schemas/LoginMode'
+    LoginSucceeded:
+      type: object
+      additionalProperties: false
+      required: [version, event_id, scenario_id, occurred_at, source, type]
+      properties:
+        version:
+          $ref: '#/components/schemas/EventVersion'
+        event_id:
+          $ref: '#/components/schemas/UuidV7'
+        scenario_id:
+          $ref: '#/components/schemas/UuidV7'
+        occurred_at:
+          $ref: '#/components/schemas/OccurredAt'
+        source:
+          type: string
+          const: mis
+        type:
+          type: string
+          const: login_succeeded
+    LoginFailed:
+      type: object
+      additionalProperties: false
+      required: [version, event_id, scenario_id, occurred_at, source, type]
+      properties:
+        version:
+          $ref: '#/components/schemas/EventVersion'
+        event_id:
+          $ref: '#/components/schemas/UuidV7'
+        scenario_id:
+          $ref: '#/components/schemas/UuidV7'
+        occurred_at:
+          $ref: '#/components/schemas/OccurredAt'
+        source:
+          type: string
+          enum: [mis, auth]
+        type:
+          type: string
+          const: login_failed
+    LoginRejected:
+      type: object
+      additionalProperties: false
+      required: [version, event_id, scenario_id, occurred_at, source, type]
+      properties:
+        version:
+          $ref: '#/components/schemas/EventVersion'
+        event_id:
+          $ref: '#/components/schemas/UuidV7'
+        scenario_id:
+          $ref: '#/components/schemas/UuidV7'
+        occurred_at:
+          $ref: '#/components/schemas/OccurredAt'
+        source:
+          type: string
+          enum: [mis, auth]
+        type:
+          type: string
+          const: login_rejected
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_event
+            - method_not_allowed
+            - event_conflict
+            - scenario_expired
+            - payload_too_large
+            - unsupported_media_type
+            - internal_error
+            - capacity_exceeded
+  responses:
+    InvalidEvent:
+      description: Невалидный JSON, схема или возраст нового события.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: invalid_event
+          example:
+            error: invalid_event
+    MethodNotAllowed:
+      description: |
+        Метод пути /events отличается от POST. Для HEAD ответ имеет тот же статус
+        и Allow: POST, но не имеет тела по RFC 9110; JSON-схема ниже для остальных методов.
+      headers:
+        Allow:
+          required: true
+          schema:
+            type: string
+            const: POST
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: method_not_allowed
+          example:
+            error: method_not_allowed
+    EventConflict:
+      description: Изменено содержимое event_id или факт противоречит сохранённому.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: event_conflict
+          example:
+            error: event_conflict
+    ScenarioExpired:
+      description: Новый факт для сценария, закрытого как unknown, не принимается.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: scenario_expired
+          example:
+            error: scenario_expired
+    PayloadTooLarge:
+      description: Превышен настраиваемый лимит HTTP-тела, первоначально 4096 байт.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: payload_too_large
+          example:
+            error: payload_too_large
+    UnsupportedMediaType:
+      description: Content-Type отсутствует, невалиден или не application/json.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: unsupported_media_type
+          example:
+            error: unsupported_media_type
+    InternalError:
+      description: Неожиданная ошибка без раскрытия технических деталей.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: internal_error
+          example:
+            error: internal_error
+    CapacityExceeded:
+      description: |
+        Допустимое новое событие не помещается в лимиты и не сохраняется; retry не выполняется.
+        Независимое закрытие ранее принятой записи по наступившему deadline сохраняется:
+        возможны переход в unknown и один вклад в Counter по BR-55.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - properties:
+                  error:
+                    const: capacity_exceeded
+          example:
+            error: capacity_exceeded

@@ -1,0 +1,8 @@
+# Подключаем ваши правила (если они в отдельном файле)
+config:
+  extends: ".markdownlint.yaml"
+
+ignores:
+  - "**/.git/**"
+  - ".opencode/**"
+  - ".ai/**"

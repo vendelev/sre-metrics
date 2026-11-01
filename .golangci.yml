@@ -1,0 +1,45 @@
+version: "2"
+
+run:
+  relative-path-mode: gomod
+
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        user-auth-isolation:
+          files:
+            - "${base-path}/module/user-auth/**/*.go"
+          deny:
+            - pkg: "metrics/"
+              desc: "user-auth may import only its own packages and explicitly shared platform packages."
+          allow:
+            - "$gostd"
+            - "metrics/module/user-auth$"
+            - "metrics/module/user-auth/"
+            - "metrics/platform/"
+          list-mode: lax
+        domain:
+          files:
+            - "${base-path}/module/user-auth/internal/domain/**/*.go"
+          list-mode: strict
+          allow:
+            - "$gostd"
+            - "metrics/module/user-auth/internal/domain/"
+          deny:
+            - pkg: "net/http"
+              desc: "HTTP belongs in an adapter, not in the domain."
+        application:
+          files:
+            - "${base-path}/module/user-auth/internal/application/**/*.go"
+          list-mode: strict
+          allow:
+            - "$gostd"
+            - "metrics/module/user-auth/internal/domain/"
+            - "metrics/module/user-auth/internal/application/"
+          deny:
+            - pkg: "net/http"
+              desc: "Application code works with events, not HTTP requests."
