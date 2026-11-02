@@ -1,7 +1,7 @@
 .PHONY: build test vet lint fmt image-user-auth
 
 build:
-	go build -o bin/user-auth ./module/user-auth/cmd/user-auth
+	go build -o bin/user-auth ./service/user-auth/cmd/user-auth
 
 test:
 	go test -race ./...
@@ -13,7 +13,7 @@ lint:
 	golangci-lint run ./...
 
 fmt:
-	gofmt -w module
+	gofmt -w service
 
 image-user-auth:
-	docker build -f module/user-auth/Dockerfile -t metrics-user-auth:local .
+	docker build -f service/user-auth/Dockerfile -t metrics-user-auth:local .

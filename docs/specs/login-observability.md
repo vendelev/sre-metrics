@@ -217,8 +217,8 @@ Go экспортирует метрики каждые 10 секунд; инт�
 
 ### МИС, браузер и Auth: обзор последовательности
 
-Схема ниже объединяет описание существующего входа из
-[обсуждения архитектуры](../temp/sre-planning-verbatim.md) и планируемую отправку событий
+Схема ниже объединяет описание существующего входа из исходного
+обсуждения архитектуры и планируемую отправку событий
 по текущему контракту. Это обзор успешного пути, не проект реализации МИС/Auth.
 По уточнению пользователя, cookie сессии Auth содержит **только ID сессии**, не её данные;
 конкретное серверное хранилище Auth здесь не определяется. Сессия МИС хранится отдельно
@@ -1078,7 +1078,7 @@ OQ-11 разрешён: после unknown известный неизменён
 Из корня этого репозитория:
 
 ```bash
-UV_CACHE_DIR=/tmp/opencode/login-spec-uv-cache uv run --with pyyaml --with jsonschema --with openapi-spec-validator --with promql-parser python specs/check_login_observability.py
+UV_CACHE_DIR=/tmp/opencode/login-spec-uv-cache uv run --with pyyaml --with jsonschema --with openapi-spec-validator --with promql-parser python docs/specs/check_login_observability.py
 ```
 
 Проверяются OpenAPI 3.1.1, разрешение ссылок схем, примеры и негативные варианты полей,
@@ -1089,8 +1089,8 @@ UV_CACHE_DIR=/tmp/opencode/login-spec-uv-cache uv run --with pyyaml --with jsons
 Отдельная проверка выполнения формул, когда доступен promtool:
 
 ```bash
-promtool check rules specs/login-observability.prometheus.rules.yml
-promtool test rules specs/login-observability.prometheus.test.yml
+promtool check rules docs/specs/login-observability.prometheus.rules.yml
+promtool test rules docs/specs/login-observability.prometheus.test.yml
 ```
 
 Подготовлены семь случаев: оба варианта и исключённые исходы, только ошибки без Histogram,

@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	userauth "metrics/module/user-auth"
+	userauth "metrics/service/user-auth"
 )
 
 func main() {
