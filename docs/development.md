@@ -23,7 +23,7 @@ make image-user-auth   # образ metrics-user-auth:local
 Сборка без Make:
 
 ```bash
-go build -o bin/user-auth ./service/user-auth/cmd/user-auth
+go build -o bin/user-auth ./service/user-auth/cmd
 docker build -f service/user-auth/Dockerfile -t metrics-user-auth:local .
 ```
 

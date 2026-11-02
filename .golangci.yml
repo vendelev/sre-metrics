@@ -15,7 +15,7 @@ linters:
             - "${base-path}/service/user-auth/**/*.go"
           deny:
             - pkg: "metrics/"
-              desc: "user-auth may import only its own packages and explicitly shared platform packages."
+              desc: "user-auth может импортировать только собственные пакеты и явно выделенные общие пакеты platform."
           allow:
             - "$gostd"
             - "metrics/service/user-auth$"
@@ -28,18 +28,21 @@ linters:
           list-mode: strict
           allow:
             - "$gostd"
+            - "metrics/service/user-auth/internal/domain$"
             - "metrics/service/user-auth/internal/domain/"
           deny:
             - pkg: "net/http"
-              desc: "HTTP belongs in an adapter, not in the domain."
+              desc: "HTTP относится к presentation, а не к domain."
         application:
           files:
             - "${base-path}/service/user-auth/internal/application/**/*.go"
           list-mode: strict
           allow:
             - "$gostd"
+            - "metrics/service/user-auth/internal/domain$"
             - "metrics/service/user-auth/internal/domain/"
+            - "metrics/service/user-auth/internal/application$"
             - "metrics/service/user-auth/internal/application/"
           deny:
             - pkg: "net/http"
-              desc: "Application code works with events, not HTTP requests."
+              desc: "Код application работает с событиями, а не с HTTP-запросами."
