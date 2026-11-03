@@ -1,0 +1,149 @@
+# Локальный стенд сравнения. Подключается через include в docker-compose.override.yml.
+x-signoz-common: &signoz-common
+  restart: unless-stopped
+  labels:
+    traefik.enable: "false"
+  logging:
+    driver: json-file
+    options:
+      max-file: "2"
+      max-size: 5m
+  networks:
+    - default
+
+services:
+  signoz-init:
+    <<: *signoz-common
+    image: ${SIGNOZ_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:25.12.5}
+    restart: "no"
+    entrypoint: ["/bin/sh", "/init.sh"]
+    mem_limit: 128m
+    cpus: 0.25
+    volumes:
+      - ./docker/signoz/init-histogram.sh:/init.sh:ro
+      - signoz_scripts:/var/lib/clickhouse/user_scripts
+
+  signoz-clickhouse:
+    <<: *signoz-common
+    image: ${SIGNOZ_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:25.12.5}
+    hostname: signoz-clickhouse
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    mem_limit: 1536m
+    cpus: 1.0
+    stop_grace_period: 1m
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - signoz_clickhouse_data:/var/lib/clickhouse
+      - signoz_scripts:/var/lib/clickhouse/user_scripts:ro
+      - ./docker/signoz/clickhouse/config.xml:/etc/clickhouse-server/config.d/signoz.xml:ro
+      - ./docker/signoz/clickhouse/users.xml:/etc/clickhouse-server/users.d/signoz.xml:ro
+      - ./docker/signoz/clickhouse/functions.xml:/etc/clickhouse-server/functions.xml:ro
+    depends_on:
+      signoz-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  signoz-migrate:
+    <<: *signoz-common
+    image: ${SIGNOZ_COLLECTOR_IMAGE:-signoz/signoz-otel-collector:v0.144.15}
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        /signoz-otel-collector migrate ready
+        /signoz-otel-collector migrate bootstrap
+        /signoz-otel-collector migrate sync up
+        /signoz-otel-collector migrate async up
+    environment:
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN: tcp://signoz-clickhouse:9000
+      SIGNOZ_OTEL_COLLECTOR_TIMEOUT: 10m
+      GOMEMLIMIT: 384MiB
+      GOMAXPROCS: "1"
+    mem_limit: 512m
+    cpus: 0.5
+    depends_on:
+      signoz-clickhouse:
+        condition: service_healthy
+
+  signoz-collector:
+    <<: *signoz-common
+    image: ${SIGNOZ_COLLECTOR_IMAGE:-signoz/signoz-otel-collector:v0.144.15}
+    command: ["--config=/etc/signoz/collector.yaml"]
+    environment:
+      GOMEMLIMIT: 192MiB
+      GOMAXPROCS: "1"
+    mem_limit: 256m
+    cpus: 0.5
+    volumes:
+      - ./docker/signoz/collector.yaml:/etc/signoz/collector.yaml:ro
+      - ./docker/signoz/collector-healthcheck.sh:/etc/signoz/healthcheck.sh:ro
+    depends_on:
+      signoz-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/etc/signoz/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  signoz:
+    <<: *signoz-common
+    image: ${SIGNOZ_IMAGE:-signoz/signoz:v0.148.1}
+    environment:
+      SIGNOZ_SQLSTORE_PROVIDER: sqlite
+      SIGNOZ_SQLSTORE_SQLITE_PATH: /var/lib/signoz/signoz.db
+      SIGNOZ_SQLSTORE_MAX_OPEN_CONNS: "5"
+      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: tcp://signoz-clickhouse:9000
+      SIGNOZ_TELEMETRYSTORE_MAX_OPEN_CONNS: "5"
+      SIGNOZ_TELEMETRYSTORE_MAX_IDLE_CONNS: "2"
+      SIGNOZ_PROMETHEUS_ACTIVE_QUERY_TRACKER_PATH: /var/lib/signoz/queries
+      SIGNOZ_PROMETHEUS_ACTIVE_QUERY_TRACKER_MAX_CONCURRENT: "2"
+      SIGNOZ_PROMETHEUS_TIMEOUT: 30s
+      SIGNOZ_ANALYTICS_ENABLED: "false"
+      SIGNOZ_STATSREPORTER_ENABLED: "false"
+      GOMEMLIMIT: 288MiB
+      GOMAXPROCS: "1"
+    mem_limit: 384m
+    cpus: 0.5
+    volumes:
+      - signoz_data:/var/lib/signoz
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=sptr_all"
+      - "traefik.http.routers.sptr-signoz.rule=Host(`${SIGNOZ_DOMAIN:-signoz.test}`)"
+      - "traefik.http.routers.sptr-signoz.entrypoints=web"
+      - "traefik.http.routers.sptr-signoz.priority=100"
+      - "traefik.http.routers.sptr-signoz.service=sptr-signoz"
+      - "traefik.http.services.sptr-signoz.loadbalancer.server.port=8080"
+    networks:
+      - default
+      - all
+    depends_on:
+      signoz-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  signoz_clickhouse_data:
+  signoz_scripts:
+  signoz_data:
+
+networks:
+    all:
+        name: sptr_all
+        external: true

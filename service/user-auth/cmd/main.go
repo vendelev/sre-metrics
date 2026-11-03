@@ -2,17 +2,18 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	userauth "metrics/service/user-auth"
+	userauth "github.com/vendelev/sre-metrics/service/user-auth"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("service", "user-auth", "component", "main")
+		logger.Error("сервис завершился с ошибкой", slog.Any("error", err))
 		os.Exit(1)
 	}
 }

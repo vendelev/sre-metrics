@@ -1,0 +1,67 @@
+# Приёмник SigNoz: только OTLP, без hostmetrics, Docker socket и сбора своих логов.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 160
+    spike_limit_mib: 32
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+    send_batch_max_size: 512
+  signozspanmetrics/delta:
+    metrics_exporter: signozclickhousemetrics
+    aggregation_temporality: AGGREGATION_TEMPORALITY_DELTA
+    metrics_flush_interval: 30s
+    dimensions_cache_size: 1000
+    enable_exp_histogram: true
+    dimensions:
+      - name: service.namespace
+        default: default
+      - name: deployment.environment
+        default: development
+
+exporters:
+  clickhousetraces:
+    datasource: tcp://signoz-clickhouse:9000/signoz_traces
+    use_new_schema: true
+    timeout: 30s
+    sending_queue:
+      enabled: false
+  signozclickhousemetrics:
+    dsn: tcp://signoz-clickhouse:9000/signoz_metrics
+    timeout: 30s
+    sending_queue:
+      enabled: false
+  metadataexporter:
+    dsn: tcp://signoz-clickhouse:9000/signoz_metadata
+    enabled: true
+    timeout: 30s
+    cache:
+      provider: in_memory
+
+extensions:
+  signoz_health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [signoz_health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, signozspanmetrics/delta, batch]
+      exporters: [clickhousetraces, metadataexporter]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [signozclickhousemetrics, metadataexporter]
+  telemetry:
+    logs:
+      level: warn

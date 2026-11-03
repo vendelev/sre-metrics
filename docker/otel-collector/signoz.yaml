@@ -1,0 +1,18 @@
+# Подключается после config.yaml и local.yaml для параллельного сравнения систем.
+exporters:
+  otlp/signoz:
+    endpoint: signoz-collector:4317
+    tls:
+      insecure: true
+    sending_queue:
+      num_consumers: 1
+      queue_size: 32
+    retry_on_failure:
+      max_elapsed_time: 30s
+
+service:
+  pipelines:
+    traces:
+      exporters: [otlp/tempo, otlp/signoz, spanmetrics]
+    metrics:
+      exporters: [prometheus, otlp/signoz]

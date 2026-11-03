@@ -1,0 +1,25 @@
+# Applied after config.yaml by docker-compose.override.yml.
+# Maps are merged; the traces exporter list adds local trace storage.
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+    sending_queue:
+      num_consumers: 1
+      queue_size: 32
+
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    sending_queue:
+      num_consumers: 1
+      queue_size: 32
+
+service:
+  pipelines:
+    traces:
+      exporters: [otlp/tempo, spanmetrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/common, batch]
+      exporters: [otlp_http/loki]

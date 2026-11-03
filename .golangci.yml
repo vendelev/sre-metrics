@@ -14,13 +14,13 @@ linters:
           files:
             - "${base-path}/service/user-auth/**/*.go"
           deny:
-            - pkg: "metrics/"
+            - pkg: "github.com/vendelev/sre-metrics/"
               desc: "user-auth может импортировать только собственные пакеты и явно выделенные общие пакеты platform."
           allow:
             - "$gostd"
-            - "metrics/service/user-auth$"
-            - "metrics/service/user-auth/"
-            - "metrics/platform/"
+            - "github.com/vendelev/sre-metrics/service/user-auth$"
+            - "github.com/vendelev/sre-metrics/service/user-auth/"
+            - "github.com/vendelev/sre-metrics/platform/"
           list-mode: lax
         domain:
           files:
@@ -28,8 +28,8 @@ linters:
           list-mode: strict
           allow:
             - "$gostd"
-            - "metrics/service/user-auth/internal/domain$"
-            - "metrics/service/user-auth/internal/domain/"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/domain$"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/domain/"
           deny:
             - pkg: "net/http"
               desc: "HTTP относится к presentation, а не к domain."
@@ -39,10 +39,11 @@ linters:
           list-mode: strict
           allow:
             - "$gostd"
-            - "metrics/service/user-auth/internal/domain$"
-            - "metrics/service/user-auth/internal/domain/"
-            - "metrics/service/user-auth/internal/application$"
-            - "metrics/service/user-auth/internal/application/"
+            - "github.com/google/uuid$"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/domain$"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/domain/"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/application$"
+            - "github.com/vendelev/sre-metrics/service/user-auth/internal/application/"
           deny:
             - pkg: "net/http"
               desc: "Код application работает с событиями, а не с HTTP-запросами."

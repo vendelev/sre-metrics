@@ -1,6 +1,6 @@
 FROM golang:1.27.3-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY service/user-auth/ ./service/user-auth/
 RUN CGO_ENABLED=0 go build -trimpath -o /out/user-auth ./service/user-auth/cmd
 

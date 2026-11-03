@@ -1,0 +1,55 @@
+{
+  "id": null,
+  "uid": "enterprise-login-journeys",
+  "title": "Вход МИС: сквозные OAuth journeys",
+  "description": "От редиректа enterprise до следующей защищённой HTML-страницы. Не этапы credentials/callback и не полная загрузка браузера. Один статический экспортёр на общий Redis namespace.",
+  "tags": ["auth", "journey"],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "text", "title": "Что измеряем и как читать", "gridPos": {"x": 0,"y": 0,"w": 24,"h": 5},
+      "options": {"mode": "markdown", "content": "**Пилот enterprise OAuth**: start перед редиректом на Auth → callback сохраняет маркер → отдельный GET успешно рендерит защищённую HTML-страницу и сохраняет сессию. Подтверждение в Request после FrontController::renderTemplate или рендеринга Template; публичные, AJAX/API и служебные index actions исключены. Не подтверждает JS, картинки, iframe и готовность браузера.\n\n**SLI** = success / (success + technical_error) среди классифицированных завершений выбранного периода. Рядом обязательно смотреть **unknown**, ожидаемые отказы и pending. Deadline по умолчанию 15 минут — консервативное закрытие, **не SLO**: вкладку могли закрыть. При нулевом знаменателе нет данных, не 100%.\n\nПриросты Prometheus — оценки по времени завершения, **не когорта стартовавших в этом же окне**. Не делить completed этого окна на started этого окна. Нет exactly-once OTLP; fail-open и потери связи могут искажать покрытие. При недоступности экспортёра/Redis старые samples могут временно оставаться видимыми."}
+    },
+    {
+      "id": 2, "type": "stat", "title": "SLI классифицированных завершений за период", "gridPos": {"x": 0,"y": 5,"w": 8,"h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "instant": true, "expr": "100 * sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=\"success\"}[$__range])) / (sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=~\"success|technical_error\"}[$__range])) > 0)"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0,"max": 100,"decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Unknown среди всех закрытых за период", "gridPos": {"x": 8,"y": 5,"w": 8,"h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "instant": true, "expr": "100 * sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=\"unknown\"}[$__range])) / (sum(increase(auth_login_journeys_completed_total{application=\"enterprise\"}[$__range])) > 0)"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0,"max": 100,"decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 4, "type": "stat", "title": "Pending сейчас (включая ожидающие worker)", "gridPos": {"x": 16,"y": 5,"w": 8,"h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "instant": true, "expr": "sum(auth_login_journeys_pending{application=\"enterprise\"})"}],
+      "fieldConfig": {"defaults": {"decimals": 0,"min": 0}, "overrides": []}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Закрытия по результатам: скользящие 5 минут", "gridPos": {"x": 0,"y": 10,"w": 24,"h": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "legendFormat": "{{result}}", "expr": "sum by (result) (increase(auth_login_journeys_completed_total{application=\"enterprise\"}[5m]))"}],
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []}
+    },
+    {
+      "id": 6, "type": "stat", "title": "Старты за период (не знаменатель SLI)", "gridPos": {"x": 0,"y": 19,"w": 12,"h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "instant": true, "expr": "sum(increase(auth_login_journeys_started_total{application=\"enterprise\"}[$__range]))"}],
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []}
+    },
+    {
+      "id": 7, "type": "stat", "title": "Число серий экспортёров: должно быть 1", "gridPos": {"x": 12,"y": 19,"w": 12,"h": 5},
+      "description": "Больше 1: ошибочная конфигурация статического writer; суммы дублируются. Нет данных: exporter не назначен или pipeline недоступен.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "instant": true, "expr": "count(auth_login_journeys_pending{application=\"enterprise\"})"}],
+      "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []}
+    }
+  ]
+}

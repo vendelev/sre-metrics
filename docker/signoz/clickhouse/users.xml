@@ -1,0 +1,19 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <max_threads>2</max_threads>
+            <max_insert_threads>1</max_insert_threads>
+            <max_memory_usage>402653184</max_memory_usage>
+            <max_bytes_before_external_group_by>100663296</max_bytes_before_external_group_by>
+            <max_bytes_before_external_sort>100663296</max_bytes_before_external_sort>
+            <log_queries>0</log_queries>
+            <allow_experimental_json_type>1</allow_experimental_json_type>
+        </default>
+    </profiles>
+    <users>
+        <default>
+            <networks><ip>0.0.0.0/0</ip></networks>
+            <access_management>1</access_management>
+        </default>
+    </users>
+</clickhouse>

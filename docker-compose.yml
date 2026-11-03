@@ -1,0 +1,58 @@
+include:
+    - docker-compose.grafana.yml
+    - docker-compose.signoz.yml
+
+services:
+    auth-metrics:
+        build:
+            context: docker/metrics
+        container_name: auth-metrics
+        restart: unless-stopped
+        environment:
+            METRICS_EXPORT_INTERVAL: 10s
+        mem_limit: 64m
+        cpus: 0.25
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        labels:
+            - "traefik.enable=false"
+        logging:
+            driver: json-file
+            options:
+                max-file: "2"
+                max-size: 5m
+        networks:
+            - all
+            - default
+
+    otel-collector:
+        image: gitlab.dwteam.ru:5050/dwteam/docker-images/otel-collector:0.147.0_2026.03.19
+        container_name: metrics-otel-collector
+        restart: unless-stopped
+        labels:
+            - "traefik.enable=true"
+            - "traefik.docker.network=sptr_all"
+            - "traefik.http.routers.otel-traces.rule=Host(`${ENTERPRISE_NAME}.test`) && Path(`/otel/v1/traces`)"
+            - "traefik.http.routers.otel-traces.entrypoints=web"
+            - "traefik.http.routers.otel-traces.priority=100"
+            - "traefik.http.middlewares.otel-traces-rewrite.replacepath.path=/v1/traces"
+            - "traefik.http.routers.otel-traces.middlewares=otel-traces-rewrite"
+            - "traefik.http.services.otel-traces.loadbalancer.server.port=4318"
+        command: ["--config=/etc/otelcol-contrib/config.yaml"]
+        healthcheck:
+            test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 10s
+        volumes:
+            - ./docker/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+        networks:
+            - all
+            - default
+
+networks:
+    all:
+        name: sptr_all
+        external: true
