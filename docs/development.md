@@ -3,7 +3,7 @@
 ## Окружение
 
 Версия Go указана в [go.mod](../go.mod); образ сборки в
-[Dockerfile сервиса](../service/user-auth/Dockerfile) должен соответствовать ей.
+[Dockerfile сервиса](../service/user-login/Dockerfile) должен соответствовать ей.
 Для линтера требуется golangci-lint v2, для образа — Docker с доступным daemon.
 Проверка с race detector требует поддерживаемой Go платформы и C-компилятора.
 Команды выполняются из корня репозитория.
@@ -22,12 +22,12 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Определения поддерживаются в [Makefile](../Makefile):
 
 ```bash
-make build             # bin/user-auth
+make build             # bin/user-login
 make test              # тесты поведения с покрытием и race detector
 make vet               # стандартный статический анализ
 make lint              # включая архитектурные импорты
 make fmt               # форматирует Go-код, исправляет импорты, переносит строки длиннее 120 колонок
-make image-user-auth   # образ metrics-user-auth:local
+make image-user-login   # образ metrics-user-login:local
 ```
 
 `make build`, `make test`, `make vet` и `make lint` не исправляют исходники;
@@ -36,11 +36,11 @@ make image-user-auth   # образ metrics-user-auth:local
 Сборка без Make:
 
 ```bash
-go build -o bin/user-auth ./service/user-auth/cmd
-docker build -f service/user-auth/Dockerfile -t metrics-user-auth:local .
+go build -o bin/user-login ./service/user-login/cmd
+docker build -f service/user-login/Dockerfile -t metrics-user-login:local .
 ```
 
-Состояние и поведение запуска описаны в [README модуля](../service/user-auth/README.md).
+Состояние и поведение запуска описаны в [README модуля](../service/user-login/README.md).
 Успешная сборка не означает запуск сервера или работу экспорта.
 HTTP-контракт проверяется через `httptest`; обычный набор тестов также проверяет lifecycle
 на `127.0.0.1:0` без внешних зависимостей. OTLP/HTTP-тесты используют локальный `httptest`,
@@ -75,14 +75,14 @@ pkgsite -http=127.0.0.1:6060 .
 ```
 
 Из корня проекта команда запускает сервер документации. Пакет сервиса доступен
-по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/service/user-auth>.
+по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/service/user-login>.
 При запуске в WSL адрес можно открыть в браузере Windows; остановка — Ctrl+C.
 
 Для ручной проверки запустите бинарник по инструкции сервиса.
 
 При запуске обязательны `USER_AUTH_NODE_NAME`, `USER_AUTH_ENVIRONMENT` и
 `USER_AUTH_OTLP_METRICS_ENDPOINT`; пример и остальные настройки — в
-[README user-auth](../service/user-auth/README.md#настройки). Конфликтующие SDK-env
+[README user-login](../service/user-login/README.md#настройки). Конфликтующие SDK-env
 нельзя использовать вместо настроек сервиса: даже пустые значения отклоняются.
 
 В другом терминале отправьте синтетическое событие с текущим UTC-временем.
@@ -105,9 +105,14 @@ curl --max-time 3 -i http://127.0.0.1:8080/events \
 
 При контейнерной проверке отправляйте тот же запрос из вспомогательного контейнера
 в сети сервиса, например `docker run --rm --network metrics-local curlimages/curl ...`
-с URL `http://user-auth:8080/events`. Порт на хост не публикуется; параметры сети
+с URL `http://user-login:8080/events`. Порт на хост не публикуется; параметры сети
 и остановки приведены в README сервиса. Для повторяемой проверки фиксируйте тег
 или digest вспомогательного образа. После проверки удалите только созданные тестовые ресурсы.
+
+Готовая Compose-конфигурация, DNS-имена сервисов, подключение правил Prometheus
+и дашбордов описаны в [инструкции локального стенда](../docker/otel-collector/README.md).
+В этом стенде адрес API — `http://user-login-metrics:8080/events`, сеть отправителей — `sptr_all`.
+Пример выше с `user-login` и `metrics-local` относится к отдельному ручному запуску контейнера.
 
 ## Зависимости и организация
 
