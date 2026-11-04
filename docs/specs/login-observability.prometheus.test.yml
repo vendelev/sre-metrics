@@ -3,6 +3,8 @@
 rule_files:
   - login-observability.prometheus.rules.yml
 evaluation_interval: 1m
+# Игнорируем различие последнего бита мантиссы при расчёте долей.
+fuzzy_compare: true
 tests:
   - name: both-modes-and-excluded-outcomes
     interval: 1m
@@ -23,11 +25,11 @@ tests:
         values: '0+9x60'
       - series: 'mis_login_scenario_duration_seconds_count{environment="test",node="node-1",mode="existing_session"}'
         values: '0+19x60'
-      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30"}'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30.0"}'
         values: '0+8x60'
-      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="existing_session",le="5"}'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="existing_session",le="5.0"}'
         values: '0+18x60'
-      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="60"}'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="60.0"}'
         values: '0+9x60'
     promql_expr_test:
       - expr: 'mis_login:sli_success:ratio1h * 1'
@@ -133,7 +135,7 @@ tests:
         values: '0+1x30 0+1x29'
       - series: 'mis_login_scenario_duration_seconds_count{environment="test",node="node-1",mode="credentials",instance="instance-1"}'
         values: '0+9x30 0+9x29'
-      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30",instance="instance-1"}'
+      - series: 'mis_login_scenario_duration_seconds_bucket{environment="test",node="node-1",mode="credentials",le="30.0",instance="instance-1"}'
         values: '0+8x30 0+8x29'
     promql_expr_test:
       - expr: 'mis_login:sli_success:ratio1h * 1'

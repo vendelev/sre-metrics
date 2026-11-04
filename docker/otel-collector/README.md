@@ -1,98 +1,113 @@
 # Локальный стек наблюдаемости
 
-`docker-compose.override.yml` подключает Grafana, Tempo, Loki и Prometheus
-из `docker-compose.grafana.yml`, а стенд SigNoz — из `docker-compose.signoz.yml`,
-и запускает Collector с тремя конфигурационными
-файлами: `config.yaml`, `local.yaml`, затем `signoz.yaml`.
-Словари настроек объединяются, а списки экспортёров из последующего файла
-заменяют соответствующие списки из предыдущих файлов.
+Основной [docker-compose.yml](../../docker-compose.yml) запускает `user-login-metrics`
+(сервис [user-login](../../service/user-login/README.md)) и основной Collector,
+а через `include` подключает Grafana/Prometheus/Tempo/Loki и SigNoz.
+Локальный `docker-compose.override.yml` не требуется.
 
-Потоки данных в локальном окружении:
+## Потоки данных
 
-- Трейсы: приложения → Collector (OTLP) → Tempo (`tempo:4317`).
-- Метрики спанов: коннектор `spanmetrics` в Collector → pipeline метрик.
-- Метрики: Prometheus забирает их из Collector (`otel-collector:8889`).
-- Метрики связей между сервисами: Tempo → Prometheus через remote write (`/api/v1/write`).
-- Логи: приложения → Collector (OTLP) → Loki (`http://loki:3100/otlp`).
-- Копия трейсов и метрик: Collector → SigNoz Collector (`signoz-collector:4317`)
-  → отдельный ClickHouse SigNoz.
+- Метрики сценариев: HTTP-события на `user-login-metrics:8080/events` → SDK user-login → OTLP/HTTP
+  `otel-collector:4318/v1/metrics` → Prometheus exporter `otel-collector:8889`
+  → scrape Prometheus → recording rules → Grafana.
+- Копия метрик: основной Collector → `signoz-collector:4317` → ClickHouse SigNoz.
+- Трейсы внешних приложений: основной Collector → Tempo и SigNoz Collector.
+  Коннектор `spanmetrics` дополнительно формирует метрики спанов.
+- Логи внешних приложений: OTLP → основной Collector → Loki.
+  Stdout контейнеров автоматически не собирается; user-login пишет логи в stderr,
+  не экспортирует их по OTLP и не создаёт трейсы.
+- Метрики связей сервисов: Tempo → Prometheus через remote write `/api/v1/write`.
 
-Grafana предоставляет интерфейс; Tempo хранит трейсы, Prometheus — метрики,
-Loki — логи. Параллельно SigNoz получает те же трейсы и метрики для сравнения
-интерфейсов. Логи в SigNoz не отправляются. Подробности и лимиты этого стенда
-описаны в [config/signoz/README.md](../signoz/README.md).
+Collector читает конфиги по порядку: [config.yaml](config.yaml), [local.yaml](local.yaml),
+[signoz.yaml](signoz.yaml). Словари объединяются, списки экспортёров из последующего
+файла заменяют предыдущие. Базовый конфиг без дополнений хранит только метрики
+для scrape и преобразует трейсы в метрики спанов; сами трейсы не сохраняет.
 
-Без override базовый Collector только предоставляет метрики для Prometheus
-и преобразует входящие трейсы в метрики спанов. Сами трейсы при этом не сохраняются
-и не отправляются в хранилище трейсов; pipeline логов не включён.
-Tempo не забирает трейсы из Collector: в отличие от сбора метрик Prometheus,
-доставка трейсов по OTLP работает по push-модели — Collector отправляет их сам.
+## Контракт метрик входа
 
-Значение `signoz` в поле `namespace` коннектора `spanmetrics` — только префикс
-имён метрик, сохранённый для совместимости с существующими запросами,
-а не подключение к SigNoz.
+Преобразование `UnderscoreEscapingWithSuffixes` закрепляет ожидаемые имена
+`mis_login_scenarios_completed_total`, `mis_login_scenarios_technical_errors_total`
+и `mis_login_scenario_duration_seconds` с `_bucket`, `_count`, `_sum`.
+Для Resource с `service.name=mis-login-observability` процессор копирует
+`host.name` в label `node`, а `deployment.environment.name` — в `environment`.
+Исходный Resource сохраняется; заданные приложением окружение и namespace не перезаписываются.
+`outcome` и `mode` приходят из SDK. Технический `service.instance.id` различает
+процессы после перезапуска и не заменяет стабильное имя ноды.
 
-## Запуск
+Prometheus загружает [контрактные recording rules](../../docs/specs/login-observability.prometheus.rules.yml)
+через read-only mount, без отдельной копии правил. Scrape и пересчёт правил — раз в 60 секунд.
+Смысл SLI, границы Histogram и ограничения baseline определены в
+[контракте](../../docs/specs/login-observability.md#8-минимальные-метрики).
+Дашборды «Вход МИС: исходы сценариев» и «Вход МИС: SLI и длительности» используют
+эти серии с выбором ноды и окружения. SLI вычисляются за скользящий час,
+независимо от выбранного диапазона дашборда. Старты и pending не экспортируются.
+
+## Подготовка и запуск
+
+Нужны Docker с Compose, поддерживающим `include`, доступ к registry образов
+и существующая доверенная внешняя сеть `sptr_all` с отправителями событий.
+Основной Collector использует образ из приватного registry: может потребоваться `docker login`.
+Первичная инициализация SigNoz также требует доступа к GitHub.
+
+Grafana и SigNoz доступны через существующий Traefik в `sptr_all`:
+`http://grafana.test/` и `http://signoz.test/`. Добавьте домены в локальное разрешение имён.
+Домены меняются через `GRAFANA_DOMAIN` и `SIGNOZ_DOMAIN`.
+Задайте `GRAFANA_ADMIN_PASSWORD` перед первым запуском; умолчание `admin`
+допустимо только на изолированном локальном стенде.
+`ENTERPRISE_NAME` задаёт домен существующего маршрута приёма внешних трейсов
+`http://${ENTERPRISE_NAME}.test/otel/v1/traces`; этот маршрут не публикует API событий.
+
+Из корня проекта:
 
 ```sh
-docker compose up -d signoz signoz-collector
-docker compose up -d prometheus tempo loki otel-collector grafana
+export ENTERPRISE_NAME=metrics
+export USER_AUTH_NODE_NAME=node-1
+export USER_AUTH_ENVIRONMENT=development
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps -a
+docker compose logs --tail=100 user-login-metrics otel-collector signoz-migrate
 ```
 
-При подключённом третьем конфиге `signoz.yaml` SigNoz нужно запустить первым.
-Иначе экспортёр SigNoz будет повторять отправки и после исчерпания очереди
-или времени повторных попыток терять свою копию данных. Tempo и Prometheus
-имеют отдельные экспортёры, но используют общий Collector и его лимит памяти.
+`user-login-metrics` собирается из [docker/metrics/Dockerfile](../metrics/Dockerfile)
+с контекстом корня проекта; версия Go должна совпадать с `go.mod`.
+Настройки сервиса — в его [README](../../service/user-login/README.md#настройки).
+Compose задаёт OTLP endpoint, интервал экспорта 10 секунд по умолчанию и бюджет остановки
+10 секунд; Docker ждёт 15 секунд перед принудительным завершением.
+Порты API событий, OTLP и хранилищ на хост не публикуются.
+Отправляйте события из доверенной сети на `http://user-login-metrics:8080/events`.
+Внутри сети используйте DNS-имена сервисов Compose (`otel-collector`, `user-login-metrics`),
+не привязывая клиентов к значениям `container_name`.
+API не имеет отдельной аутентификации: состав `sptr_all` является границей доверия.
 
-Grafana автоматически подключает источники данных Tempo и Loki. Хранилища
-не публикуют порты на хост, не имеют маршрутов Traefik и не требуют аутентификации.
-Не открывайте к ним доступ за пределами внутренней сети Compose.
+SigNoz запускается через init и миграции, затем основной Collector и приложение.
+Healthcheck основного Collector проверяет конфигурацию командой `validate`,
+а не готовность OTLP или доставку данных. Перед тестовым трафиком дождитесь
+успешного экспорта и исходного scrape. Описание отправки синтетического события —
+в [инструкции разработки](../../docs/development.md).
+Проверка HTTP 204 не подтверждает доставку метрик.
 
-Приложения в этой сети могут отправлять логи по OTLP/HTTP на
-`http://otel-collector:4318/v1/logs` или по OTLP/gRPC на `otel-collector:4317`.
-Вывод stdout и файлы логов контейнеров **не собираются автоматически**.
-Существующий публичный маршрут Traefik принимает только трейсы, не логи.
+Для остановки приложения с финальным best-effort экспортом сначала выполните
+`docker compose stop user-login-metrics`, пока Collector ещё работает.
+Затем остановите стек через `docker compose stop`. Эти команды не удаляют тома.
+Финальная отправка не гарантирует, что Prometheus успеет сделать scrape.
 
-## Ограничения ресурсов
+## Ограничения
 
-Tempo и Loki работают каждый в одном процессе и сохраняют данные в именованный
-Docker volume. Лимит памяти контейнера — 256 MiB, мягкий лимит памяти Go —
-192 MiB, лимит CPU — 0.5.
-Параллелизм запросов и очереди экспортёров Collector уменьшены. Отдельные сервисы
-генерации метрик, объектного хранилища, кеширования и сбора логов не добавляются.
+Наличие конфигурации и дашбордов не означает приёмку интеграции. Для неё нужно
+проверить реальные имена, labels, корзины 5/30/60/+Inf, reset, baseline,
+восстановление экспорта и SLI во внешнем pipeline.
+SDK и Collector не обеспечивают exactly-once; очереди не сохраняются на диск.
+После перезапуска старые ряды процесса могут оставаться в exporter до истечения срока публикации.
+Нет данных — не ноль и не 100% SLI; отдельно проверяйте доступность источника.
 
-Встроенный metrics-generator Tempo запускает `local-blocks` для TraceQL metrics,
-используемых Grafana Traces Drilldown (`rate()` и др.), и `service-graphs`
-для карты сервисов. Метрики связей отправляются в Prometheus через remote write;
-приём доступен только внутри сети Compose. Источник Tempo в Grafana связан
-с источником `prometheus` для отображения Service Graph в Explore.
+Tempo и Loki сохраняют данные за 24 часа, Prometheus — до 7 дней с лимитом TSDB 1 GB.
+Retention выполняется асинхронно и не задаёт жёсткую квоту диска.
+Tempo и Loki ограничены 256 MiB памяти каждый; конфиги рассчитаны на небольшую dev-нагрузку.
+В Tempo включены `local-blocks` для TraceQL metrics и `service-graphs`.
+Они требуют нового инструментированного трафика; user-login сам его не создаёт.
+Метрики спанов создаёт Collector, а не процессор `span-metrics` Tempo.
 
-Процессор карты сервисов использует один worker и буфер на 1000 связей,
-ожидающих сопоставления спанов; очередь remote write ограничена одним шардом.
-При повышенной нагрузке небольшой буфер может приводить к потере связей.
-Процессор `span-metrics` в Tempo выключен, поскольку метрики спанов
-уже генерирует Collector.
-
-Для заполнения карты создайте трафик между инструментированными сервисами
-со стабильными значениями `service.name` и передачей trace context между ними.
-Подождите примерно 1–2 минуты для сбора метрик и накопления достаточного числа
-измерений для расчёта скорости запросов. Выберите временной диапазон,
-включающий новый трафик. Существующие трейсы в карту автоматически не пересчитываются.
-
-Локальные блоки сохраняются в хранилище для исторических запросов TraceQL metrics.
-Трейсы, полученные до включения этого процессора, автоматически не пересчитываются;
-для заполнения графиков Drilldown создайте новый трафик после перезапуска Tempo.
-
-Используется ветка Tempo 2.10 с исправлениями для классического однопроцессного
-развёртывания. Образы можно переопределить через `TEMPO_IMAGE` и `LOKI_IMAGE`;
-конфигурации зависят от версии.
-
-Tempo и Loki сохраняют данные за 24 часа. Удаление выполняется асинхронно:
-это не точная граница удаления и не квота на размер диска. Большой поток данных
-или тяжёлые запросы всё ещё могут исчерпать память или диск. Настройки рассчитаны
-на небольшую нагрузку при разработке, не на продакшен. При достижении лимита
-памяти процесс может быть завершён механизмом OOM.
-
-`docker-compose.override.yml` в этом репозитории игнорируется Git. При настройке
-на другой машине передайте определения его сервисов и томов отдельно:
-одни только отслеживаемые конфиги хранилищ не включают локальный стек.
+Ресурсы, retention и отключение параллельного получателя описаны в
+[README SigNoz](../signoz/README.md). Остановка одного SigNoz при активном экспортёре
+приводит к повторным отправкам и возможной потере его копии данных.

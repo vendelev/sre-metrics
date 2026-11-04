@@ -17,3 +17,6 @@ fmt:
 
 image-user-login:
 	docker build -f service/user-login/Dockerfile -t metrics-user-login:local .
+
+up:
+	docker compose up -d

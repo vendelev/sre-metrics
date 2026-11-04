@@ -3,13 +3,22 @@ include:
     - docker-compose.signoz.yml
 
 services:
-    auth-metrics:
+    user-login-metrics:
         build:
-            context: docker/metrics
-        container_name: auth-metrics
+            context: .
+            dockerfile: docker/metrics/Dockerfile
+        container_name: user-login-metrics
         restart: unless-stopped
         environment:
-            METRICS_EXPORT_INTERVAL: 10s
+            USER_AUTH_NODE_NAME: ${USER_AUTH_NODE_NAME:-node-1}
+            USER_AUTH_ENVIRONMENT: ${USER_AUTH_ENVIRONMENT:-development}
+            USER_AUTH_OTLP_METRICS_ENDPOINT: http://otel-collector:4318/v1/metrics
+            USER_AUTH_OTLP_EXPORT_INTERVAL: ${USER_AUTH_OTLP_EXPORT_INTERVAL:-10s}
+            USER_AUTH_SHUTDOWN_TIMEOUT: 10s
+        stop_grace_period: 15s
+        depends_on:
+            otel-collector:
+                condition: service_started
         mem_limit: 64m
         cpus: 0.25
         read_only: true
@@ -39,15 +48,30 @@ services:
             - "traefik.http.middlewares.otel-traces-rewrite.replacepath.path=/v1/traces"
             - "traefik.http.routers.otel-traces.middlewares=otel-traces-rewrite"
             - "traefik.http.services.otel-traces.loadbalancer.server.port=4318"
-        command: ["--config=/etc/otelcol-contrib/config.yaml"]
+        command:
+            - --config=/etc/otelcol-contrib/config.yaml
+            - --config=/etc/otelcol-contrib/local.yaml
+            - --config=/etc/otelcol-contrib/signoz.yaml
         healthcheck:
-            test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+            # Проверяет конфигурацию, а не готовность приёмника OTLP.
+            test:
+                - CMD
+                - /otelcol-contrib
+                - validate
+                - --config=/etc/otelcol-contrib/config.yaml
+                - --config=/etc/otelcol-contrib/local.yaml
+                - --config=/etc/otelcol-contrib/signoz.yaml
             interval: 30s
             timeout: 5s
             retries: 3
             start_period: 10s
         volumes:
             - ./docker/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+            - ./docker/otel-collector/local.yaml:/etc/otelcol-contrib/local.yaml:ro
+            - ./docker/otel-collector/signoz.yaml:/etc/otelcol-contrib/signoz.yaml:ro
+        depends_on:
+            signoz-collector:
+                condition: service_healthy
         networks:
             - all
             - default

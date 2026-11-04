@@ -1,5 +1,3 @@
-# Applied after config.yaml by docker-compose.override.yml.
-# Maps are merged; the traces exporter list adds local trace storage.
 exporters:
   otlp/tempo:
     endpoint: tempo:4317

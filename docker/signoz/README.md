@@ -1,7 +1,8 @@
 # Локальный SigNoz для сравнения с Grafana
 
-Стенд подключается через `include: docker-compose.signoz.yml` в локальном
-`docker-compose.override.yml`. Основной compose и ClickHouse приложения не меняются.
+Стенд подключается через `include: docker-compose.signoz.yml` в основном
+[docker-compose.yml](../../docker-compose.yml). Дополнительный override не требуется.
+ClickHouse SigNoz отделён от хранилищ внешних приложений.
 
 Используются закреплённые версии SigNoz `v0.148.1`, его Collector `v0.144.15`
 и ClickHouse `25.12.5`. За основу взяты актуальные конфиги официального
@@ -26,7 +27,7 @@ SigNoz. Это отдельные производные метрики, а не
 
 ```sh
 docker compose up -d signoz signoz-collector
-docker compose up -d prometheus tempo loki otel-collector grafana
+docker compose up -d --build
 ```
 
 Зависимости запускаются автоматически. `signoz-init` один раз загружает
@@ -36,7 +37,7 @@ docker compose up -d prometheus tempo loki otel-collector grafana
 это может занять несколько минут: дождитесь его успешного завершения.
 Не обновляйте образы без проверки совместимости схем и резервной копии томов.
 
-Интерфейс: **http://signoz.test/** через существующий Traefik.
+Интерфейс: <http://signoz.test/> через существующий Traefik.
 Добавьте домен в локальное разрешение имён, как для `grafana.test`.
 Домен можно изменить через `SIGNOZ_DOMAIN`. При первом входе создайте учётную запись.
 Порты ClickHouse, Keeper и приёма OTLP не публикуются на хост. Их доступность
@@ -53,9 +54,9 @@ docker compose logs --tail=100 signoz-migrate signoz-collector signoz
 
 Основной Collector загружает конфиги в порядке:
 
-1. `config/otel-collector/config.yaml` — общий приём и обработка;
-2. `config/otel-collector/local.yaml` — Tempo, Prometheus, Loki;
-3. `config/otel-collector/signoz.yaml` — добавление копии трейсов и метрик в SigNoz.
+1. `docker/otel-collector/config.yaml` — общий приём и обработка;
+2. `docker/otel-collector/local.yaml` — Tempo, Prometheus, Loki;
+3. `docker/otel-collector/signoz.yaml` — добавление копии трейсов и метрик в SigNoz.
 
 Последний конфиг заменяет списки экспортёров, сохраняя обе системы:
 
@@ -90,11 +91,10 @@ Sampling не добавлен: обе системы получают один�
 рекомендует выделять Docker не менее 4 GB для установки SigNoz.
 Первичная миграция может требовать больше ресурсов, чем обычный приём данных.
 
-В коротком изолированном smoke-тесте с одним трейсом и тестовой метрикой
-ClickHouse использовал около 175 MiB, SigNoz — 38 MiB, его Collector — 26 MiB.
-Проверены миграции, healthcheck, прохождение данных через основной Collector
-и наличие трейса и метрики в ClickHouse. Это не нагрузочный тест и не оценка
-расхода ресурсов на длительной истории или при работе с дашбордами.
+Конфигурация стенда сама по себе не подтверждает миграции, доставку метрик user-login
+или корректность Histogram и SLI в SigNoz. Recording rules Prometheus в SigNoz
+не переносятся автоматически. Результаты отдельных экспериментов с другой
+конфигурацией не заменяют проверку текущего pipeline.
 
 **Retention SigNoz управляется самим SigNoz, а не конфигами Tempo/Loki.**
 После первого входа откройте Settings → Workspace → Retention Controls
@@ -113,14 +113,14 @@ ClickHouse использовал около 175 MiB, SigNoz — 38 MiB, его 
 Не оставляйте активным экспортёр на остановленный SigNoz:
 
 1. Уберите третий `--config=/etc/otelcol-contrib/signoz.yaml` из `command`
-   и `healthcheck.test` сервиса `otel-collector` в override.
+   и `healthcheck.test` сервиса `otel-collector` в основном Compose.
+   Уберите также его `depends_on: signoz-collector`, иначе Compose снова запустит получатель.
 2. Пересоздайте основной Collector: `docker compose up -d otel-collector`.
 3. Остановите стенд: `docker compose stop signoz signoz-collector signoz-clickhouse`.
 
 Для полного отключения можно также убрать соответствующий bind mount
-и `include: docker-compose.signoz.yml` из override. Тома не удаляйте,
+и `include: docker-compose.signoz.yml` из основного Compose. Тома не удаляйте,
 если хотите сохранить результаты сравнения.
 
-Сам `docker-compose.override.yml` игнорируется Git, но `docker-compose.signoz.yml`
-и файлы этой директории можно передавать вместе с проектом. На другой машине
-потребуется также подключить include и третий конфиг Collector в override.
+Все конфиги включены в репозиторий. Общие требования к сети, registry, доменам
+и порядку остановки — в [инструкции локального стека](../otel-collector/README.md).

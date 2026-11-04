@@ -1,55 +1,113 @@
 {
   "id": null,
   "uid": "enterprise-login-journeys",
-  "title": "Вход МИС: сквозные OAuth journeys",
-  "description": "От редиректа enterprise до следующей защищённой HTML-страницы. Не этапы credentials/callback и не полная загрузка браузера. Один статический экспортёр на общий Redis namespace.",
-  "tags": ["auth", "journey"],
+  "title": "Вход МИС: SLI и длительности",
+  "description": "Три показателя качества входа за скользящий час и распределение успешных длительностей. Начала и незавершённые сценарии сервисом не экспортируются.",
+  "tags": ["mis-login"],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "timezone": "browser",
   "refresh": "30s",
-  "time": {"from": "now-24h", "to": "now"},
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "environment", "label": "Окружение", "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(mis_login_scenarios_completed_total, environment)", "refId": "environment"},
+        "refresh": 1, "sort": 1, "multi": false, "includeAll": false, "options": []
+      },
+      {
+        "name": "node", "label": "Нода", "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(mis_login_scenarios_completed_total{environment=\"$environment\"}, node)", "refId": "node"},
+        "refresh": 1, "sort": 1, "multi": false, "includeAll": false, "options": []
+      }
+    ]
+  },
   "panels": [
     {
-      "id": 1, "type": "text", "title": "Что измеряем и как читать", "gridPos": {"x": 0,"y": 0,"w": 24,"h": 5},
-      "options": {"mode": "markdown", "content": "**Пилот enterprise OAuth**: start перед редиректом на Auth → callback сохраняет маркер → отдельный GET успешно рендерит защищённую HTML-страницу и сохраняет сессию. Подтверждение в Request после FrontController::renderTemplate или рендеринга Template; публичные, AJAX/API и служебные index actions исключены. Не подтверждает JS, картинки, iframe и готовность браузера.\n\n**SLI** = success / (success + technical_error) среди классифицированных завершений выбранного периода. Рядом обязательно смотреть **unknown**, ожидаемые отказы и pending. Deadline по умолчанию 15 минут — консервативное закрытие, **не SLO**: вкладку могли закрыть. При нулевом знаменателе нет данных, не 100%.\n\nПриросты Prometheus — оценки по времени завершения, **не когорта стартовавших в этом же окне**. Не делить completed этого окна на started этого окна. Нет exactly-once OTLP; fail-open и потери связи могут искажать покрытие. При недоступности экспортёра/Redis старые samples могут временно оставаться видимыми."}
+      "id": 1, "type": "text", "title": "Как читать показатели", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 10},
+      "options": {"mode": "markdown", "content": "**SLI** — измеренная доля качественных входов; **SLO** — целевое значение: каждый из трёх показателей должен быть **≥ 90%** на выбранной ноде и в выбранном окружении.\n\n- **Общая успешность (SLI-01)** — успехи / (успехи + технические ошибки). Медленный успех тоже входит в числитель.\n- **С вводом данных (SLI-02, `credentials`)** — Auth потребовал ввод учётных данных. Показатель: успехи за **≤ 30 с** / (успехи с измеренной длительностью + технические ошибки этого варианта).\n- **По сессии Auth (SLI-03, `existing_session`)** — Auth использовал действующую сессию без ввода данных. Показатель рассчитывается аналогично, но порог — **≤ 5 с**. Действующая сессия самой МИС без нового входа не создаёт сценарий.\n- **Длительность** — время от начала входа в МИС до формирования защищённой страницы, включая ввод данных, паузы и редиректы. Корзина **«≤ 5/30/60 с»** показывает накопленное число успехов не дольше границы; **«все длительности»** включает и успехи дольше 60 с. Корзины перекрываются: их нельзя складывать. Граница 60 с — диагностическая, не дополнительный SLO.\n- **Технические ошибки по вариантам** — оценка прироста числа подтверждённых сбоев, прервавших вход, за последние 5 минут. Ошибки без известного варианта сюда не входят.\n\nШтатные отказы и неизвестные исходы исключены из всех SLI. Успех без известного варианта или корректной длительности входит только в общую успешность. Только ошибки дают 0%; нулевой знаменатель или отсутствующий источник — **нет данных**, не 100%.\n\nSLI рассчитываются правилами Prometheus за **скользящий час**, независимо от диапазона дашборда; пересчёт — раз в 60 с. Гистограмма появляется после первого реального наблюдения: первый прирост может быть не виден без исходного отсчёта. Накопленные значения процесса сбрасываются при перезапуске. Отсутствие данных не доказывает исправность источника."}
     },
     {
-      "id": 2, "type": "stat", "title": "SLI классифицированных завершений за период", "gridPos": {"x": 0,"y": 5,"w": 8,"h": 5},
+      "id": 2, "type": "stat", "title": "SLI-01: успешность за 1 час",
+      "description": "Доля успехов среди успехов и технических ошибок за скользящий час. Медленные успехи учитываются. Штатные отказы и неизвестные исходы исключены. Цель — не менее 90%.",
+      "gridPos": {"x": 0, "y": 10, "w": 8, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "instant": true, "expr": "100 * sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=\"success\"}[$__range])) / (sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=~\"success|technical_error\"}[$__range])) > 0)"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0,"max": 100,"decimals": 2}, "overrides": []}
+      "targets": [{"refId": "A", "expr": "mis_login:sli_success:ratio1h{environment=\"$environment\",node=\"$node\"}", "instant": true, "range": false}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "decimals": 2, "noValue": "Нет данных", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.9}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
     },
     {
-      "id": 3, "type": "stat", "title": "Unknown среди всех закрытых за период", "gridPos": {"x": 8,"y": 5,"w": 8,"h": 5},
+      "id": 3, "type": "stat", "title": "SLI-02: с вводом данных ≤ 30 с за 1 час",
+      "description": "Auth потребовал ввод учётных данных. Доля успехов за 30 секунд включительно среди успехов с измеренной длительностью и технических ошибок этого варианта за скользящий час. Цель — не менее 90%.",
+      "gridPos": {"x": 8, "y": 10, "w": 8, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "instant": true, "expr": "100 * sum(increase(auth_login_journeys_completed_total{application=\"enterprise\",result=\"unknown\"}[$__range])) / (sum(increase(auth_login_journeys_completed_total{application=\"enterprise\"}[$__range])) > 0)"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0,"max": 100,"decimals": 2}, "overrides": []}
+      "targets": [{"refId": "A", "expr": "mis_login:sli_timely_by_mode:ratio1h{environment=\"$environment\",node=\"$node\",mode=\"credentials\"}", "instant": true, "range": false}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "decimals": 2, "noValue": "Нет данных", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.9}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
     },
     {
-      "id": 4, "type": "stat", "title": "Pending сейчас (включая ожидающие worker)", "gridPos": {"x": 16,"y": 5,"w": 8,"h": 5},
+      "id": 4, "type": "stat", "title": "SLI-03: по сессии Auth ≤ 5 с за 1 час",
+      "description": "Auth использовал действующую сессию без ввода данных. Доля успехов за 5 секунд включительно среди успехов с измеренной длительностью и технических ошибок этого варианта за скользящий час. Цель — не менее 90%.",
+      "gridPos": {"x": 16, "y": 10, "w": 8, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "instant": true, "expr": "sum(auth_login_journeys_pending{application=\"enterprise\"})"}],
-      "fieldConfig": {"defaults": {"decimals": 0,"min": 0}, "overrides": []}
+      "targets": [{"refId": "A", "expr": "mis_login:sli_timely_by_mode:ratio1h{environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}", "instant": true, "range": false}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "decimals": 2, "noValue": "Нет данных", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.9}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
     },
     {
-      "id": 5, "type": "timeseries", "title": "Закрытия по результатам: скользящие 5 минут", "gridPos": {"x": 0,"y": 10,"w": 24,"h": 9},
+      "id": 5, "type": "timeseries", "title": "SLI за скользящий час: история",
+      "description": "Каждая точка — показатель за предшествующий час. Общая успешность учитывает все варианты; два других показателя учитывают своевременный успех только своего варианта входа.",
+      "gridPos": {"x": 0, "y": 15, "w": 24, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "legendFormat": "{{result}}", "expr": "sum by (result) (increase(auth_login_journeys_completed_total{application=\"enterprise\"}[5m]))"}],
-      "fieldConfig": {"defaults": {"min": 0}, "overrides": []}
+      "targets": [
+         {"refId": "A", "expr": "mis_login:sli_success:ratio1h{environment=\"$environment\",node=\"$node\"}", "legendFormat": "Общая успешность", "range": true},
+        {"refId": "B", "expr": "mis_login:sli_timely_by_mode:ratio1h{environment=\"$environment\",node=\"$node\"}", "legendFormat": "{{mode}}", "range": true}
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"spanNulls": false}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "credentials"}, "properties": [{"id": "displayName", "value": "С вводом данных ≤ 30 с"}]},
+          {"matcher": {"id": "byName", "options": "existing_session"}, "properties": [{"id": "displayName", "value": "По сессии Auth ≤ 5 с"}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
     },
     {
-      "id": 6, "type": "stat", "title": "Старты за период (не знаменатель SLI)", "gridPos": {"x": 0,"y": 19,"w": 12,"h": 5},
+      "id": 6, "type": "timeseries", "title": "Накопительные корзины успешных длительностей",
+      "description": "Каждая линия — накопленное число успешных входов не дольше указанной границы. «Все длительности» включает любые длительности, в том числе более 60 секунд. Корзины перекрываются, складывать их нельзя. Наблюдение требует известных начала, варианта и корректной длительности. После перезапуска значения процесса сбрасываются.",
+      "gridPos": {"x": 0, "y": 23, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "instant": true, "expr": "sum(increase(auth_login_journeys_started_total{application=\"enterprise\"}[$__range]))"}],
-      "fieldConfig": {"defaults": {"min": 0}, "overrides": []}
+      "targets": [{"refId": "A", "expr": "sum by (mode, le) (mis_login_scenario_duration_seconds_bucket{environment=\"$environment\",node=\"$node\"})", "legendFormat": "{{mode}} ≤ {{le}} с", "range": true}],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "min": 0, "decimals": 0},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "credentials ≤ 5.0 с"}, "properties": [{"id": "displayName", "value": "С вводом данных ≤ 5 с"}]},
+          {"matcher": {"id": "byName", "options": "credentials ≤ 30.0 с"}, "properties": [{"id": "displayName", "value": "С вводом данных ≤ 30 с"}]},
+          {"matcher": {"id": "byName", "options": "credentials ≤ 60.0 с"}, "properties": [{"id": "displayName", "value": "С вводом данных ≤ 60 с"}]},
+          {"matcher": {"id": "byName", "options": "credentials ≤ +Inf с"}, "properties": [{"id": "displayName", "value": "С вводом данных: все длительности"}]},
+          {"matcher": {"id": "byName", "options": "existing_session ≤ 5.0 с"}, "properties": [{"id": "displayName", "value": "По сессии Auth ≤ 5 с"}]},
+          {"matcher": {"id": "byName", "options": "existing_session ≤ 30.0 с"}, "properties": [{"id": "displayName", "value": "По сессии Auth ≤ 30 с"}]},
+          {"matcher": {"id": "byName", "options": "existing_session ≤ 60.0 с"}, "properties": [{"id": "displayName", "value": "По сессии Auth ≤ 60 с"}]},
+          {"matcher": {"id": "byName", "options": "existing_session ≤ +Inf с"}, "properties": [{"id": "displayName", "value": "По сессии Auth: все длительности"}]}
+        ]
+      }
     },
     {
-      "id": 7, "type": "stat", "title": "Число серий экспортёров: должно быть 1", "gridPos": {"x": 12,"y": 19,"w": 12,"h": 5},
-      "description": "Больше 1: ошибочная конфигурация статического writer; суммы дублируются. Нет данных: exporter не назначен или pipeline недоступен.",
+      "id": 7, "type": "timeseries", "title": "Технические ошибки по вариантам: скользящие 5 минут",
+      "description": "Оценка прироста технических ошибок за предшествующие 5 минут отдельно для входов с вводом данных и по сессии Auth. Ошибки без известного варианта исключены. Дробные значения возможны из-за экстраполяции Prometheus.",
+      "gridPos": {"x": 12, "y": 23, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "instant": true, "expr": "count(auth_login_journeys_pending{application=\"enterprise\"})"}],
-      "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []}
+      "targets": [{"refId": "A", "expr": "sum by (mode) (increase(mis_login_scenarios_technical_errors_total{environment=\"$environment\",node=\"$node\"}[5m]))", "legendFormat": "{{mode}}", "range": true}],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "min": 0, "decimals": 2},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "credentials"}, "properties": [{"id": "displayName", "value": "С вводом данных"}]},
+          {"matcher": {"id": "byName", "options": "existing_session"}, "properties": [{"id": "displayName", "value": "По сессии Auth"}]}
+        ]
+      }
     }
   ]
 }

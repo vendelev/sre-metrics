@@ -19,16 +19,31 @@ processors:
 
   resource/common:
     attributes:
-      - key: deployment.environment
+      - key: deployment.environment.name
         value: development
-        action: upsert
+        action: insert
       - key: service.namespace
         value: sptr
-        action: upsert
+        action: insert
+
+  # Копируем только контрактные разрезы сервиса; исходный Resource сохраняется.
+  transform/login_labels:
+    error_mode: propagate
+    metric_statements:
+      - context: datapoint
+        statements:
+          - >-
+            set(attributes["node"], resource.attributes["host.name"])
+            where resource.attributes["service.name"] == "mis-login-observability"
+            and resource.attributes["host.name"] != nil
+          - >-
+            set(attributes["environment"], resource.attributes["deployment.environment.name"])
+            where resource.attributes["service.name"] == "mis-login-observability"
+            and resource.attributes["deployment.environment.name"] != nil
 
 connectors:
   spanmetrics:
-    # Metric name prefix only; no dependency on a SigNoz backend.
+    # Только префикс метрик спанов, не подключение к SigNoz.
     namespace: signoz
     histogram:
       explicit:
@@ -37,6 +52,7 @@ connectors:
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
+    translation_strategy: UnderscoreEscapingWithSuffixes
 
 extensions:
   health_check:
@@ -48,9 +64,9 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource/common, batch]
-      # Trace storage is connected by an additional environment-specific config.
+      # Хранилище трейсов подключается дополнительным конфигом окружения.
       exporters: [spanmetrics]
     metrics:
       receivers: [otlp, spanmetrics]
-      processors: [memory_limiter, resource/common, batch]
+      processors: [memory_limiter, resource/common, transform/login_labels, batch]
       exporters: [prometheus]

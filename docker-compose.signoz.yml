@@ -1,4 +1,3 @@
-# Локальный стенд сравнения. Подключается через include в docker-compose.override.yml.
 x-signoz-common: &signoz-common
   restart: unless-stopped
   labels:

@@ -2,6 +2,7 @@
 # Контракт расчёта, не автоматически подключённая production-конфигурация.
 # Требует согласованного преобразования имён OTLP и labels node/environment.
 # Доли находятся в диапазоне 0..1; цель SLO — >= 0.90.
+# Prometheus 3 нормализует le в формат с плавающей точкой: 5.0, 30.0, 60.0.
 groups:
   - name: mis-login-sli
     interval: 60s
@@ -36,11 +37,11 @@ groups:
         expr: |
           (
             sum by (environment, node, mode) (
-              increase(mis_login_scenario_duration_seconds_bucket{mode="credentials",le="30"}[1h])
+              increase(mis_login_scenario_duration_seconds_bucket{mode="credentials",le="30.0"}[1h])
             )
             or on (environment, node, mode)
             sum by (environment, node, mode) (
-              increase(mis_login_scenario_duration_seconds_bucket{mode="existing_session",le="5"}[1h])
+              increase(mis_login_scenario_duration_seconds_bucket{mode="existing_session",le="5.0"}[1h])
             )
           )
           or on (environment, node, mode)
