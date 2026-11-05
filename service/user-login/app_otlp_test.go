@@ -772,9 +772,27 @@ func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
 	waitSignal(t, httpExited)
 	releaseOnce()
 	waitSignal(t, exited)
-	select {
-	case <-r.samples:
-		t.Fatal("отправка после аварийного завершения")
-	case <-time.After(3 * cfg.OTLPExportInterval):
+	// Получатель может опубликовать уже начатый до Shutdown запрос после
+	// возврата остановки. Продолжающийся периодический экспорт не даст
+	// наступить полосе тишины длиной в три интервала.
+	quiet := time.NewTimer(3 * cfg.OTLPExportInterval)
+	defer quiet.Stop()
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case <-r.samples:
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(3 * cfg.OTLPExportInterval)
+		case <-quiet.C:
+			return
+		case <-timeout.C:
+			t.Fatal("экспорт продолжается после аварийного завершения")
+		}
 	}
 }
