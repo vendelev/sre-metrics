@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	userauth "github.com/vendelev/sre-metrics/service/user-login"
+	userlogin "github.com/vendelev/sre-metrics/service/user-login"
 )
 
 func main() {
@@ -22,5 +22,5 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return userauth.Run(ctx)
+	return userlogin.Run(ctx)
 }

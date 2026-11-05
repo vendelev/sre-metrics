@@ -106,23 +106,23 @@ docker network rm metrics-local
 Явно заданные пустые или некорректные значения — ошибка, а не повод использовать умолчание.
 Длительности задаются с единицей: `500ms`, `2s`, `1m`.
 
-| Env | Умолчание | Назначение |
-| --- | --- | --- |
-| `USER_AUTH_LISTEN_ADDR` | `:8080` | Адрес `host:port`, IPv6 — `[адрес]:port`; порт 0 выбирается автоматически |
-| `USER_AUTH_MAX_BODY_BYTES` | `4096` | Максимальный размер тела в байтах |
-| `USER_AUTH_MAX_SCENARIOS` | `10000` | Общий лимит хранимых сценариев |
-| `USER_AUTH_MAX_EVENTS_PER_SCENARIO` | `32` | Лимит уникальных событий записи |
-| `USER_AUTH_MAINTENANCE_INTERVAL` | `1s` | Период обслуживания |
-| `USER_AUTH_HTTP_READ_HEADER_TIMEOUT` | `1s` | Чтение заголовков |
-| `USER_AUTH_HTTP_READ_TIMEOUT` | `2s` | Чтение всего запроса, включая тело |
-| `USER_AUTH_HTTP_WRITE_TIMEOUT` | `2s` | Тайм-аут записи ответа |
-| `USER_AUTH_HTTP_IDLE_TIMEOUT` | `30s` | Ожидание следующего запроса keep-alive |
-| `USER_AUTH_SHUTDOWN_TIMEOUT` | `10s` | Единый бюджет остановки |
-| `USER_AUTH_NODE_NAME` | Нет | Стабильная нода без пробельных и управляющих символов |
-| `USER_AUTH_ENVIRONMENT` | Нет | Окружение без пробельных и управляющих символов |
-| `USER_AUTH_OTLP_METRICS_ENDPOINT` | Нет | Полный http/https URL с точным путём `/v1/metrics` |
-| `USER_AUTH_OTLP_EXPORT_INTERVAL` | `10s` | Интервал периодического экспорта |
-| `USER_AUTH_OTLP_EXPORT_TIMEOUT` | `2s` | Предел одной отправки |
+| Env                                  | Умолчание | Назначение                                                                |
+|--------------------------------------|-----------|---------------------------------------------------------------------------|
+| `USER_AUTH_LISTEN_ADDR`              | `:8080`   | Адрес `host:port`, IPv6 — `[адрес]:port`; порт 0 выбирается автоматически |
+| `USER_AUTH_MAX_BODY_BYTES`           | `4096`    | Максимальный размер тела в байтах                                         |
+| `USER_AUTH_MAX_SCENARIOS`            | `10000`   | Общий лимит хранимых сценариев                                            |
+| `USER_AUTH_MAX_EVENTS_PER_SCENARIO`  | `32`      | Лимит уникальных событий записи                                           |
+| `USER_AUTH_MAINTENANCE_INTERVAL`     | `1s`      | Период обслуживания                                                       |
+| `USER_AUTH_HTTP_READ_HEADER_TIMEOUT` | `1s`      | Чтение заголовков                                                         |
+| `USER_AUTH_HTTP_READ_TIMEOUT`        | `2s`      | Чтение всего запроса, включая тело                                        |
+| `USER_AUTH_HTTP_WRITE_TIMEOUT`       | `2s`      | Тайм-аут записи ответа                                                    |
+| `USER_AUTH_HTTP_IDLE_TIMEOUT`        | `30s`     | Ожидание следующего запроса keep-alive                                    |
+| `USER_AUTH_SHUTDOWN_TIMEOUT`         | `10s`     | Единый бюджет остановки                                                   |
+| `USER_AUTH_NODE_NAME`                | Нет       | Стабильная нода без пробельных и управляющих символов                     |
+| `USER_AUTH_ENVIRONMENT`              | Нет       | Окружение без пробельных и управляющих символов                           |
+| `USER_AUTH_OTLP_METRICS_ENDPOINT`    | Нет       | Полный http/https URL с точным путём `/v1/metrics`                        |
+| `USER_AUTH_OTLP_EXPORT_INTERVAL`     | `10s`     | Интервал периодического экспорта                                          |
+| `USER_AUTH_OTLP_EXPORT_TIMEOUT`      | `2s`      | Предел одной отправки                                                     |
 
 Все числовые значения положительны. Интервал обслуживания не превышает `1m`;
 тайм-аут заголовков не превышает тайм-аут чтения. Перекрёстная формула бюджета остановки

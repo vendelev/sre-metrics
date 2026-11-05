@@ -1,5 +1,5 @@
-// Package userauth предназначен для сборки и запуска сервиса метрик входа.
-package userauth
+// Package userlogin предназначен для сборки и запуска сервиса метрик входа.
+package userlogin
 
 import (
 	"context"

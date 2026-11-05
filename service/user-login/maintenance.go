@@ -1,4 +1,4 @@
-package userauth
+package userlogin
 
 import (
 	"context"
