@@ -14,5 +14,5 @@ tab_width = 4
 insert_final_newline = false
 trim_trailing_whitespace = false
 
-[Makefile]
+[{Makefile,*.go}]
 indent_style = tab

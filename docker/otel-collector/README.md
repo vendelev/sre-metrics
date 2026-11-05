@@ -1,7 +1,7 @@
 # Локальный стек наблюдаемости
 
 Основной [docker-compose.yml](../../docker-compose.yml) запускает `user-login-metrics`
-(сервис [user-login](../../service/user-login/README.md)) и основной Collector,
+(сервис [user-login](../../module/user-login/README.md)) и основной Collector,
 а через `include` подключает Grafana/Prometheus/Tempo/Loki и SigNoz.
 Локальный `docker-compose.override.yml` не требуется.
 
@@ -70,8 +70,8 @@ docker compose logs --tail=100 user-login-metrics otel-collector signoz-migrate
 ```
 
 `user-login-metrics` собирается из [docker/metrics/Dockerfile](../metrics/Dockerfile)
-с контекстом корня проекта; версия Go должна совпадать с `go.mod`.
-Настройки сервиса — в его [README](../../service/user-login/README.md#настройки).
+с контекстом корня проекта; версия Go должна совпадать с `../../module/go.mod`.
+Настройки сервиса — в его [README](../../module/user-login/README.md#настройки).
 Compose задаёт OTLP endpoint, интервал экспорта 10 секунд по умолчанию и бюджет остановки
 10 секунд; Docker ждёт 15 секунд перед принудительным завершением.
 Порты API событий, OTLP и хранилищ на хост не публикуются.

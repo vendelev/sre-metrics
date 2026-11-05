@@ -2,8 +2,8 @@
 
 ## Окружение
 
-Версия Go указана в [go.mod](../go.mod); образ сборки в
-[Dockerfile сервиса](../service/user-login/Dockerfile) должен соответствовать ей.
+Версия Go указана в [go.mod](../module/go.mod); образ сборки в
+[Dockerfile сервиса](../docker/metrics/Dockerfile) должен соответствовать ей.
 Для линтера требуется golangci-lint v2, для образа — Docker с доступным daemon.
 Проверка с race detector требует поддерживаемой Go платформы и C-компилятора.
 Команды выполняются из корня репозитория.
@@ -36,11 +36,11 @@ make image-user-login   # образ metrics-user-login:local
 Сборка без Make:
 
 ```bash
-go build -o bin/user-login ./service/user-login/cmd
-docker build -f service/user-login/Dockerfile -t metrics-user-login:local .
+go build -o bin/user-login ./module/user-login/cmd
+docker build -f module/user-login/Dockerfile -t metrics-user-login:local .
 ```
 
-Состояние и поведение запуска описаны в [README модуля](../service/user-login/README.md).
+Состояние и поведение запуска описаны в [README модуля](../module/user-login/README.md).
 Успешная сборка не означает запуск сервера или работу экспорта.
 HTTP-контракт проверяется через `httptest`; обычный набор тестов также проверяет lifecycle
 на `127.0.0.1:0` без внешних зависимостей. OTLP/HTTP-тесты используют локальный `httptest`,
@@ -75,14 +75,14 @@ pkgsite -http=127.0.0.1:6060 .
 ```
 
 Из корня проекта команда запускает сервер документации. Пакет сервиса доступен
-по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/service/user-login>.
+по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/module/user-login>.
 При запуске в WSL адрес можно открыть в браузере Windows; остановка — Ctrl+C.
 
 Для ручной проверки запустите бинарник по инструкции сервиса.
 
 При запуске обязательны `USER_AUTH_NODE_NAME`, `USER_AUTH_ENVIRONMENT` и
 `USER_AUTH_OTLP_METRICS_ENDPOINT`; пример и остальные настройки — в
-[README user-login](../service/user-login/README.md#настройки). Конфликтующие SDK-env
+[README user-login](../module/user-login/README.md#настройки). Конфликтующие SDK-env
 нельзя использовать вместо настроек сервиса: даже пустые значения отклоняются.
 
 В другом терминале отправьте синтетическое событие с текущим UTC-временем.
@@ -117,14 +117,14 @@ curl --max-time 3 -i http://127.0.0.1:8080/events \
 ## Зависимости и организация
 
 Версии Go-зависимостей и их контрольные суммы находятся в
-[`go.mod`](../go.mod) и [`go.sum`](../go.sum). Путь Go-модуля
+[`../module/go.mod`](../module/go.mod) и [`go.sum`](../module/go.sum). Путь Go-модуля
 `github.com/vendelev/sre-metrics` соответствует адресу репозитория. При переименовании
-обновляются `go.mod`, Go-импорты и пути в [.golangci.yml](../.golangci.yml).
+обновляются `../module/go.mod`, Go-импорты и пути в [.golangci.yml](../module/.golangci.yml).
 
 При добавлении сервиса следуйте
 [правилам его размещения и изоляции](../.agents/rules/Architecture.md#статус-и-границы-сервисов).
 Дополните каталог модулей в корневом README, команды сборки в Makefile
-и правила импортов в `.golangci.yml`.
+и правила импортов в `../module/.golangci.yml`.
 
 Правила [архитектуры](../.agents/rules/Architecture.md) и
 [тестирования](../.agents/rules/Testing.md) определяют границы и требования к проверкам.
