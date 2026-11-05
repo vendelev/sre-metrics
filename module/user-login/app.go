@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -27,26 +28,25 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("конфигурация user-login: %w", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("service", "user-login")
-	app, err := newService(cfg, logger, clock.Real{})
+	app, err := newService(cfg, logger, clock.RealTime{})
 	if err != nil {
 		return err
 	}
-	return app.run(ctx, runOptions{})
+	return app.run(ctx, nil)
 }
 
 // service владеет компонентами и ресурсами одного запуска. Сборка выполняется
 // явной цепочкой конструкторов; контейнер зависимостей и его lifecycle
 // не используются.
 type service struct {
-	server       *http.Server
-	observer     *application.LoginObserver
-	recorder     *otel.Recorder
-	cfg          config.Config
-	logger       *slog.Logger
-	pipeline     metricPipeline
-	openPipeline func(context.Context, *otel.Recorder) (metricPipeline, error)
+	server   *http.Server
+	observer *application.LoginObserver
+	recorder *otel.Recorder
+	cfg      config.Config
+	logger   *slog.Logger
+	pipeline *otel.Pipeline
 
-	options         runOptions
+	ready           func(net.Addr)
 	listener        *ownedListener
 	stopMaintenance context.CancelFunc
 	serverTask      *backgroundTask
@@ -88,8 +88,8 @@ func newService(cfg config.Config, logger *slog.Logger, clock domain.Clock) (*se
 	return &service{server: server, observer: observer, recorder: recorder, cfg: cfg, logger: logger}, nil
 }
 
-func (s *service) run(ctx context.Context, options runOptions) error {
-	s.options = options
+func (s *service) run(ctx context.Context, ready func(net.Addr)) error {
+	s.ready = ready
 	s.failed = make(chan struct{}, 1)
 	// Неуспешный запуск сам выполняет очистку и возвращает ошибку без разбора
 	// её состава; специальная нормализация отмены запуска не выполняется.

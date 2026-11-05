@@ -5,19 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 )
-
-// runOptions позволяет тестам управлять ресурсными границами и обслуживанием,
-// не создавая отдельный путь запуска сервиса.
-type runOptions struct {
-	listen       func(context.Context) (net.Listener, error)
-	ready        func(net.Addr)
-	confirmReady func(context.Context) error
-	maintain     func() error
-}
 
 // backgroundTask публикует результат закрытием done. После истечения бюджета
 // владелец не ждёт произвольную Go-функцию и не читает ещё не готовый результат.
@@ -71,11 +61,6 @@ func (s *service) startResources(ctx context.Context) error {
 }
 
 func (s *service) announceReady(ctx context.Context) error {
-	if s.options.confirmReady != nil {
-		if err := s.options.confirmReady(ctx); err != nil {
-			return err
-		}
-	}
 	if err := s.taskErrors(); err != nil {
 		return err
 	}
@@ -83,8 +68,8 @@ func (s *service) announceReady(ctx context.Context) error {
 		return err
 	}
 	s.logger.Info("сервис user-login запущен", slog.String("address", s.listener.Addr().String()))
-	if s.options.ready != nil {
-		s.options.ready(s.listener.Addr())
+	if s.ready != nil {
+		s.ready(s.listener.Addr())
 	}
 	return nil
 }
@@ -162,30 +147,14 @@ func (s *service) taskErrors() error {
 	return result
 }
 
-// metricPipeline описывает только владение ресурсами; запись получает Store
-// через уже собранный Recorder. Тесты lifecycle могут использовать локальный SDK.
-type metricPipeline interface {
-	Shutdown(context.Context) error
-}
-
 func (s *service) startSDK(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	open := s.openPipeline
-	if open == nil {
-		open = func(ctx context.Context, recorder *otel.Recorder) (metricPipeline, error) {
-			pipeline, err := otel.StartPipeline(ctx, recorder, otel.PipelineSettings{
-				Endpoint: s.cfg.OTLPMetricsEndpoint, Interval: s.cfg.OTLPExportInterval,
-				ExportTimeout: s.cfg.OTLPExportTimeout,
-			}, s.logger.With("component", "otel"))
-			if err != nil {
-				return nil, err
-			}
-			return pipeline, nil
-		}
-	}
-	pipeline, err := open(ctx, s.recorder)
+	pipeline, err := otel.StartPipeline(ctx, s.recorder, otel.PipelineSettings{
+		Endpoint: s.cfg.OTLPMetricsEndpoint, Interval: s.cfg.OTLPExportInterval,
+		ExportTimeout: s.cfg.OTLPExportTimeout,
+	}, s.logger.With("component", "otel"))
 	s.pipeline = pipeline
 	if err != nil {
 		return fmt.Errorf("запуск OTLP pipeline: %w", err)

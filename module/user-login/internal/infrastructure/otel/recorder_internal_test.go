@@ -8,18 +8,18 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestNewRecorderUUIDError(t *testing.T) {
+func TestNewResourceUUIDError(t *testing.T) {
 	cause := errors.New("синтетический сбой генерации UUID")
-	r, err := newRecorder(
+	res, err := newResource(
 		ResourceSettings{NodeName: "node-test", Environment: "test"},
 		func() (uuid.UUID, error) { return uuid.Nil, cause },
 	)
-	if r != nil || !errors.Is(err, cause) {
+	if res != nil || !errors.Is(err, cause) {
 		t.Fatalf("ошибка создания ID потеряна: %v", err)
 	}
 }
 
-func TestPreparedRecorderActivation(t *testing.T) {
+func TestPrepareDoesNotStartSDK(t *testing.T) {
 	r, err := Prepare(ResourceSettings{NodeName: "node-test", Environment: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -27,11 +27,14 @@ func TestPreparedRecorderActivation(t *testing.T) {
 	if r.provider != nil || r.Reader() != nil || r.completed != nil {
 		t.Fatal("Prepare создал SDK")
 	}
-	res := r.resource
 	if err := r.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.StartLocal(); err != nil {
+}
+
+func TestPipelineRejectsLocalRecorder(t *testing.T) {
+	r, err := New(ResourceSettings{NodeName: "node-test", Environment: "test"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -39,18 +42,11 @@ func TestPreparedRecorderActivation(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if r.resource != res || r.provider == nil || r.Reader() == nil {
-		t.Fatal("активация изменила Resource или не запустила SDK")
-	}
-	if err := r.StartLocal(); err == nil {
-		t.Fatal("разрешён второй provider")
-	}
 	settings := pipelineSettings("http://localhost:4318/v1/metrics")
-	if p, err := StartPipeline(t.Context(), r, settings, testLogger()); p != nil || err == nil {
+	p, err := StartPipeline(t.Context(), r, settings, testLogger())
+	cleanupPipeline(t, p)
+	if p != nil || err == nil {
 		t.Fatal("экспортный provider добавлен к локальному")
-	}
-	if err := (*Recorder)(nil).StartLocal(); err == nil {
-		t.Fatal("принят nil Recorder")
 	}
 }
 

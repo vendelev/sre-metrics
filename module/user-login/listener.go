@@ -47,14 +47,8 @@ func (s *service) openListener(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	listen := s.options.listen
-	if listen == nil {
-		var listenConfig net.ListenConfig
-		listen = func(ctx context.Context) (net.Listener, error) {
-			return listenConfig.Listen(ctx, "tcp", s.cfg.ListenAddr)
-		}
-	}
-	listener, err := listen(ctx)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("запуск HTTP user-login на %s: %w", s.cfg.ListenAddr, err)
 	}

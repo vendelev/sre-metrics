@@ -43,11 +43,20 @@ var _ domain.MeasurementRecorder = (*Recorder)(nil)
 // New создаёт инструменты, зарегистрированный reader и шесть нулевых рядов Counter.
 // UUID v7 создаётся один раз. Фоновых задач и сети у локального reader нет.
 func New(settings ResourceSettings) (*Recorder, error) {
-	return newRecorder(settings, uuid.NewV7)
+	res, err := newResource(settings, uuid.NewV7)
+	if err != nil {
+		return nil, err
+	}
+	reader := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(sdkmetric.DefaultTemporalitySelector))
+	r, err := recorderWithReader(res, reader)
+	if r != nil {
+		r.reader = reader
+	}
+	return r, err
 }
 
 // Prepare создаёт один Resource и UUID, но не provider, инструменты или reader.
-// До StartPipeline или StartLocal регистрировать измерения нельзя. Активация
+// До StartPipeline регистрировать измерения нельзя. Активация
 // выполняется однократно, до запуска HTTP и обслуживания, без конкурентного доступа.
 func Prepare(settings ResourceSettings) (*Recorder, error) {
 	res, err := newResource(settings, uuid.NewV7)
@@ -55,22 +64,6 @@ func Prepare(settings ResourceSettings) (*Recorder, error) {
 		return nil, err
 	}
 	return &Recorder{resource: res}, nil
-}
-
-// StartLocal активирует подготовленный Recorder с ManualReader для изолированных
-// тестов. Реальный сервис использует StartPipeline, без второго reader.
-func (r *Recorder) StartLocal() error {
-	if err := r.checkPrepared(); err != nil {
-		return err
-	}
-	reader := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(sdkmetric.DefaultTemporalitySelector))
-	active, err := recorderWithReader(r.resource, reader)
-	if err != nil {
-		return err
-	}
-	active.reader = reader
-	*r = *active
-	return nil
 }
 
 func (r *Recorder) checkPrepared() error {
@@ -103,19 +96,6 @@ func newResource(settings ResourceSettings, newID func() (uuid.UUID, error)) (*r
 	), nil
 }
 
-func newRecorder(settings ResourceSettings, newID func() (uuid.UUID, error)) (*Recorder, error) {
-	res, err := newResource(settings, newID)
-	if err != nil {
-		return nil, err
-	}
-	reader := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(sdkmetric.DefaultTemporalitySelector))
-	r, err := recorderWithReader(res, reader)
-	if r != nil {
-		r.reader = reader
-	}
-	return r, err
-}
-
 func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recorder, error) {
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res), sdkmetric.WithReader(reader),
@@ -129,7 +109,7 @@ func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recor
 			}},
 		)),
 	)
-	r, err := newInstruments(provider, nil)
+	r, err := newInstruments(provider)
 	if err != nil {
 		// Инструменты не готовы: финальный пакет и новое сетевое ожидание не нужны.
 		// В SDK v1.47.0 отменённый контекст запрещает последний сбор, но Shutdown
@@ -151,7 +131,7 @@ func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recor
 	return r, nil
 }
 
-func newInstruments(provider *sdkmetric.MeterProvider, reader *sdkmetric.ManualReader) (*Recorder, error) {
+func newInstruments(provider *sdkmetric.MeterProvider) (*Recorder, error) {
 	meter := provider.Meter(ScopeName)
 	completed, err := meter.Int64Counter(CompletedName, metric.WithUnit("1"))
 	if err != nil {
@@ -165,7 +145,7 @@ func newInstruments(provider *sdkmetric.MeterProvider, reader *sdkmetric.ManualR
 	if err != nil {
 		return nil, fmt.Errorf("создание гистограммы длительностей: %w", err)
 	}
-	return &Recorder{provider: provider, reader: reader, completed: completed,
+	return &Recorder{provider: provider, completed: completed,
 		technicalErrors: technicalErrors, duration: duration}, nil
 }
 

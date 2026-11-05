@@ -3,77 +3,51 @@ package userlogin
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
-	"syscall"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 )
 
-func TestRunBindCancellation(t *testing.T) {
-	bindErr := &net.OpError{Op: "listen", Net: "tcp", Err: syscall.EADDRINUSE}
-	// Нормализация отмены запуска не выполняется: любая отмена во время bind —
-	// ошибка запуска, независимый сбой рядом с отменой не теряется.
-	for _, tc := range []struct {
-		name        string
-		listenError func(error) error
-		want        error
-	}{
-		{"чистая отмена", func(err error) error { return err }, context.Canceled},
-		{"отмена в сетевой обёртке", func(err error) error { return &net.OpError{Op: "listen", Net: "tcp", Err: err} }, context.Canceled},
-		{"отмена с контекстом операции", func(err error) error { return fmt.Errorf("открытие listener: %w", err) }, context.Canceled},
-		{"сбой bind одновременно с отменой", func(error) error { return bindErr }, syscall.EADDRINUSE},
-		{"сбой bind объединён с отменой", func(err error) error { return errors.Join(err, bindErr) }, syscall.EADDRINUSE},
-		{"обёртка объединённой ошибки", func(err error) error {
-			return fmt.Errorf("открытие listener: %w", errors.Join(err, bindErr))
-		}, syscall.EADDRINUSE},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			app := testService(t, config.Default())
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			ready := false
-			options := runOptions{
-				listen: func(ctx context.Context) (net.Listener, error) {
-					cancel()
-					return nil, tc.listenError(ctx.Err())
-				},
-				ready: func(net.Addr) { ready = true },
-			}
-			err := app.run(ctx, options)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("ожидалась ошибка %v, получено %v", tc.want, err)
-			}
-			if ready {
-				t.Fatal("неуспешный запуск объявлен готовым")
-			}
-		})
-	}
+// Устойчивый отказ Accept одновременно с отменой нельзя надёжно воспроизвести
+// через TCP: закрытие сокета возвращает штатный net.ErrClosed. Обёртка нужна
+// только для проверки сохранения исходной ошибки внутри HTTP-фазы.
+type failedAcceptListener struct {
+	net.Listener
+	err    error
+	cancel context.CancelFunc
 }
 
-func TestRunBindFailureWithCancellation(t *testing.T) {
+func (l failedAcceptListener) Accept() (net.Conn, error) {
+	l.cancel()
+	return nil, l.err
+}
+
+func TestHTTPFailureWithCancellation(t *testing.T) {
 	t.Parallel()
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = occupied.Close() }()
-	cfg := config.Default()
-	cfg.ListenAddr = occupied.Addr().String()
-	app := testService(t, cfg)
+	r := newServiceReceiver(t)
+	app := testService(t, actualConfig(r), clock.RealTime{})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	err = app.run(ctx, runOptions{listen: func(ctx context.Context) (net.Listener, error) {
-		var listenConfig net.ListenConfig
-		listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddr)
-		cancel()
-		return listener, err
-	}})
-	if !errors.Is(err, syscall.EADDRINUSE) {
-		t.Fatalf("настоящий сбой bind потерян при одновременной отмене: %v", err)
+	t.Cleanup(func() { _ = app.stop(t.Context()) })
+	if err := app.openListener(ctx); err != nil {
+		t.Fatal(err)
 	}
+	cause := errors.New("управляемый отказ Accept")
+	app.listener.Listener = failedAcceptListener{Listener: app.listener.Listener, err: cause, cancel: cancel}
+	if err := app.startSDK(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.startHTTP(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitSignal(t, app.serverTask.done)
+	if err := app.stop(ctx); !errors.Is(err, cause) {
+		t.Fatalf("сбой Accept потерян при отмене: %v", err)
+	}
+	assertListenerClosed(t, app)
 }
 
 type closeErrorListener struct {
@@ -85,23 +59,33 @@ func (l closeErrorListener) Close() error {
 	return errors.Join(l.Listener.Close(), l.err)
 }
 
-func TestRunCancellationPreservesCleanupError(t *testing.T) {
+// Системный Close обычно успешен; подмена ограничена конкретной фазой очистки
+// и не требует фабрики listener в рабочем запуске.
+func TestCancellationPreservesCleanupErrors(t *testing.T) {
 	t.Parallel()
-	app := testService(t, config.Default())
+	r := newServiceReceiver(t)
+	r.fail.Store(true)
+	cfg := actualConfig(r)
+	cfg.OTLPExportInterval = time.Hour
+	app := testService(t, cfg, clock.RealTime{})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	listener := newControlledListener()
+	t.Cleanup(func() { _ = app.stop(t.Context()) })
+	if err := app.openListener(ctx); err != nil {
+		t.Fatal(err)
+	}
 	cause := errors.New("сбой закрытия listener")
-	err := app.run(ctx, runOptions{listen: func(context.Context) (net.Listener, error) {
-		cancel()
-		return closeErrorListener{Listener: listener, err: cause}, nil
-	}})
-	if !errors.Is(err, cause) {
-		t.Fatalf("ошибка очистки потеряна при отмене запуска: %v", err)
+	app.listener.Listener = closeErrorListener{Listener: app.listener.Listener, err: cause}
+	if err := app.startSDK(ctx); err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-listener.closed:
-	default:
-		t.Fatal("listener не закрыт после отмены запуска")
+	cancel()
+	err := app.stop(ctx)
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "освобождение SDK метрик") {
+		t.Fatalf("ошибка закрытия listener или финального экспорта потеряна при отмене: %v", err)
 	}
+	if r.calls.Load() != 1 {
+		t.Fatal("финальная отправка не состоялась или повторилась")
+	}
+	assertListenerClosed(t, app)
 }

@@ -13,12 +13,8 @@ func (s *service) startMaintenance(ctx context.Context) error {
 	// Отмена запуска сначала должна прекратить приём HTTP, а не оборвать задачу.
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.stopMaintenance = cancel
-	operation := s.observer.Maintain
-	if s.options.maintain != nil {
-		operation = s.options.maintain
-	}
 	s.maintenanceTask = s.startTask(func() error {
-		if err := maintain(ctx, s.cfg.MaintenanceInterval, operation); err != nil {
+		if err := maintain(ctx, s.cfg.MaintenanceInterval, s.observer.Maintain); err != nil {
 			return fmt.Errorf("периодическое обслуживание user-login: %w", err)
 		}
 		return nil
