@@ -1,0 +1,575 @@
+{
+  "schemaVersion": "v6",
+  "name": "mis-login-sli",
+  "tags": [
+    {
+      "key": "application",
+      "value": "mis-login"
+    }
+  ],
+  "spec": {
+    "display": {
+      "name": "Вход МИС: SLI и длительности",
+      "description": "Сценарии входа МИС: исходные OTLP-метрики в SigNoz."
+    },
+    "duration": "1h",
+    "refreshInterval": "1m",
+    "variables": [
+      {
+        "kind": "ListVariable",
+        "spec": {
+          "name": "environment",
+          "display": {
+            "name": "Окружение"
+          },
+          "defaultValue": "development",
+          "allowMultiple": false,
+          "allowAllValue": false,
+          "sort": "alphabetical-asc",
+          "plugin": {
+            "kind": "signoz/DynamicVariable",
+            "spec": {
+              "name": "environment",
+              "signal": "metrics"
+            }
+          }
+        }
+      },
+      {
+        "kind": "ListVariable",
+        "spec": {
+          "name": "node",
+          "display": {
+            "name": "Нода"
+          },
+          "defaultValue": "node-1",
+          "allowMultiple": false,
+          "allowAllValue": false,
+          "sort": "alphabetical-asc",
+          "plugin": {
+            "kind": "signoz/DynamicVariable",
+            "spec": {
+              "name": "node",
+              "signal": "metrics"
+            }
+          }
+        }
+      }
+    ],
+    "panels": {
+      "guide": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Как читать"
+          },
+          "plugin": {
+            "kind": "signoz/TextPanel",
+            "spec": {
+              "mode": "markdown",
+              "text": "**SLI** — измеренная доля качественных входов, **SLO** — цель: каждый показатель **≥ 90%** для выбранной ноды и окружения.\n\n- **Общая успешность** — успехи / (успехи + технические ошибки). Медленный успех тоже учитывается.\n- **С вводом данных** — Auth потребовал ввод учётных данных. SLI: успехи за **≤ 30 с** / (успехи с измеренной длительностью + технические ошибки этого варианта).\n- **По сессии Auth** — действующая сессия Auth без ввода данных; та же формула с порогом **≤ 5 с**. Действующая сессия самой МИС без нового входа не создаёт сценарий.\n- **Корзины длительностей** — накопленные успешные входы не дольше указанной границы. Они перекрываются, складывать их нельзя. «Все длительности» включает успехи дольше 60 с. Граница 60 с — диагностика, не дополнительный SLO. Длительность включает ввод данных, паузы и редиректы.\n\nОтказы и неизвестные исходы исключены из всех SLI. Успех без варианта или корректной длительности входит только в общий SLI. Только ошибки дают 0%; нулевой знаменатель — **нет данных**, не 100%.\n\nКаждая точка SLI использует **скользящий час**, независимо от диапазона дашборда. Формулы выполняются непосредственно в SigNoz, без recording rules Prometheus. Первый прирост новой гистограммы может быть не виден без исходного отсчёта. Отсутствие данных не доказывает исправность источника."
+            }
+          },
+          "queries": []
+        }
+      },
+      "success": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "SLI-01: общая успешность",
+            "description": "За скользящий час. Цель — не менее 90%."
+          },
+          "plugin": {
+            "kind": "signoz/NumberPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "percent",
+                "decimalPrecision": "2"
+              },
+              "thresholds": [
+                {
+                  "value": 90,
+                  "operator": "below",
+                  "color": "#F1575F",
+                  "format": "text"
+                },
+                {
+                  "value": 90,
+                  "operator": "above_or_equal",
+                  "color": "#4CAF50",
+                  "format": "text"
+                }
+              ]
+            }
+          },
+          "queries": [
+            {
+              "kind": "scalar",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/PromQLQuery",
+                  "spec": {
+                    "name": "A",
+                    "query": "100 * ((sum by (environment, node) (increase({\"mis.login.scenarios.completed\",environment=\"$environment\",node=\"$node\",outcome=\"success\"}[1h]))) / on (environment, node) ((sum by (environment, node) (increase({\"mis.login.scenarios.completed\",environment=\"$environment\",node=\"$node\",outcome=~\"success|technical_error\"}[1h]))) > 0))",
+                    "legend": "SLI-01: общая успешность",
+                    "disabled": false,
+                    "step": 60
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "SLI-02: с вводом данных ≤ 30 с",
+            "description": "За скользящий час. Цель — не менее 90%."
+          },
+          "plugin": {
+            "kind": "signoz/NumberPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "percent",
+                "decimalPrecision": "2"
+              },
+              "thresholds": [
+                {
+                  "value": 90,
+                  "operator": "below",
+                  "color": "#F1575F",
+                  "format": "text"
+                },
+                {
+                  "value": 90,
+                  "operator": "above_or_equal",
+                  "color": "#4CAF50",
+                  "format": "text"
+                }
+              ]
+            }
+          },
+          "queries": [
+            {
+              "kind": "scalar",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/PromQLQuery",
+                  "spec": {
+                    "name": "A",
+                    "query": "100 * ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"30\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h])))))) / on (environment, node) ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.count\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h]))))) + on (environment, node) (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h])))) > 0))",
+                    "legend": "SLI-02: с вводом данных ≤ 30 с",
+                    "disabled": false,
+                    "step": 60
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "existing_session": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "SLI-03: по сессии Auth ≤ 5 с",
+            "description": "За скользящий час. Цель — не менее 90%."
+          },
+          "plugin": {
+            "kind": "signoz/NumberPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "percent",
+                "decimalPrecision": "2"
+              },
+              "thresholds": [
+                {
+                  "value": 90,
+                  "operator": "below",
+                  "color": "#F1575F",
+                  "format": "text"
+                },
+                {
+                  "value": 90,
+                  "operator": "above_or_equal",
+                  "color": "#4CAF50",
+                  "format": "text"
+                }
+              ]
+            }
+          },
+          "queries": [
+            {
+              "kind": "scalar",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/PromQLQuery",
+                  "spec": {
+                    "name": "A",
+                    "query": "100 * ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"5\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h])))))) / on (environment, node) ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.count\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h]))))) + on (environment, node) (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h])))) > 0))",
+                    "legend": "SLI-03: по сессии Auth ≤ 5 с",
+                    "disabled": false,
+                    "step": 60
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "history": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "SLI за скользящий час: история",
+            "description": "Каждая точка использует предшествующий час."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "percent",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "step_after",
+                "fillMode": "none"
+              },
+              "axes": {
+                "softMin": 0,
+                "softMax": 100
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "100 * ((sum by (environment, node) (increase({\"mis.login.scenarios.completed\",environment=\"$environment\",node=\"$node\",outcome=\"success\"}[1h]))) / on (environment, node) ((sum by (environment, node) (increase({\"mis.login.scenarios.completed\",environment=\"$environment\",node=\"$node\",outcome=~\"success|technical_error\"}[1h]))) > 0))",
+                          "legend": "SLI-01: общая успешность",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "100 * ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"30\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h])))))) / on (environment, node) ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.count\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h]))))) + on (environment, node) (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[1h])))) > 0))",
+                          "legend": "SLI-02: с вводом данных ≤ 30 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "C",
+                          "query": "100 * ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"5\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h])))))) / on (environment, node) ((((sum by (environment, node) (increase({\"mis.login.scenario.duration.count\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h]))) or on (environment, node) (0 * (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h]))))) + on (environment, node) (sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[1h])))) > 0))",
+                          "legend": "SLI-03: по сессии Auth ≤ 5 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "buckets": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Накопительные корзины успешных длительностей",
+            "description": "Перекрывающиеся корзины нельзя складывать. Измерение требует известных начала, варианта и корректной длительности."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "short",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "step_after",
+                "fillMode": "none"
+              },
+              "axes": {
+                "softMin": 0
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"5\"})",
+                          "legend": "С вводом данных ≤ 5 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"30\"})",
+                          "legend": "С вводом данных ≤ 30 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "C",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"60\"})",
+                          "legend": "С вводом данных ≤ 60 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "D",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"credentials\",le=\"+Inf\"})",
+                          "legend": "С вводом данных: все длительности",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "E",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"5\"})",
+                          "legend": "По сессии Auth ≤ 5 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "F",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"30\"})",
+                          "legend": "По сессии Auth ≤ 30 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "G",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"60\"})",
+                          "legend": "По сессии Auth ≤ 60 с",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "H",
+                          "query": "sum by (environment, node) ({\"mis.login.scenario.duration.bucket\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\",le=\"+Inf\"})",
+                          "legend": "По сессии Auth: все длительности",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "errors": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Технические ошибки по вариантам: скользящие 5 минут",
+            "description": "Оценка прироста ошибок с известным вариантом за предшествующие 5 минут. Дробные значения допустимы."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time"
+              },
+              "formatting": {
+                "unit": "short",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "step_after",
+                "fillMode": "none"
+              },
+              "axes": {
+                "softMin": 0
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"credentials\"}[5m]))",
+                          "legend": "С вводом данных",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "sum by (environment, node) (increase({\"mis.login.scenarios.technical_errors\",environment=\"$environment\",node=\"$node\",mode=\"existing_session\"}[5m]))",
+                          "legend": "По сессии Auth",
+                          "disabled": false,
+                          "step": 60
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "items": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 10,
+              "content": {
+                "$ref": "#/spec/panels/guide"
+              }
+            },
+            {
+              "x": 0,
+              "y": 10,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/success"
+              }
+            },
+            {
+              "x": 4,
+              "y": 10,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/credentials"
+              }
+            },
+            {
+              "x": 8,
+              "y": 10,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/existing_session"
+              }
+            },
+            {
+              "x": 0,
+              "y": 14,
+              "width": 12,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/history"
+              }
+            },
+            {
+              "x": 0,
+              "y": 22,
+              "width": 6,
+              "height": 10,
+              "content": {
+                "$ref": "#/spec/panels/buckets"
+              }
+            },
+            {
+              "x": 6,
+              "y": 22,
+              "width": 6,
+              "height": 10,
+              "content": {
+                "$ref": "#/spec/panels/errors"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
