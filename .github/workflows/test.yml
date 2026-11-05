@@ -1,0 +1,32 @@
+name: Тесты
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go-тесты
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Загрузка исходного кода
+        uses: actions/checkout@v6
+
+      - name: Установка Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Загрузка и проверка зависимостей
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Запуск тестов
+        run: make test
