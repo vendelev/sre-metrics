@@ -150,7 +150,7 @@ func sendServiceEvent(
 		source, extra = "auth", `,"mode":"credentials"`
 	}
 	body := fmt.Sprintf(
-		`{"version":1,"event_id":"019aabcd-0000-7000-8000-%012x","scenario_id":"019aabcd-0000-7000-9000-%012x","occurred_at":%q,"source":%q,"type":%q%s}`,
+		`{"event_id":"019aabcd-0000-7000-8000-%012x","scenario_id":"019aabcd-0000-7000-9000-%012x","occurred_at":%q,"source":%q,"type":%q%s}`,
 		id,
 		scenario,
 		at.Format("2006-01-02T15:04:05.000Z"),

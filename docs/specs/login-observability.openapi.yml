@@ -3,7 +3,7 @@ info:
   title: MIS Login Observability Events API
   version: 1.0.0
   description: |
-    Контракт событий версии 1. Редакция комплекта спецификации — 0.28, на согласовании.
+    Контракт событий без поля версии. Редакция комплекта спецификации — 0.29, согласовано.
     API измеряет сценарии, но не управляет авторизацией. Каждое событие отправляется
     синхронно один раз с общим timeout 1 секунда; ошибки не прерывают вход.
     Хранение только в памяти, 204 не гарантирует сохранность после перезапуска
@@ -15,8 +15,8 @@ info:
     Retention закрытой записи — логическая граница: при now_Go >= времени закрытия Go
     + 15 минут запись и её event_id атомарно считаются удалёнными до дедупликации
     и проверки фактов, независимо от фоновой очистки (BR-56). Агрегаты сохраняются.
-x-contract-revision: '0.28'
-x-contract-status: review
+x-contract-revision: '0.29'
+x-contract-status: agreed
 x-open-decisions: []
 security: []
 tags:
@@ -37,7 +37,10 @@ paths:
         хранения закрытых записей, сохранённый event_id,
         возраст нового события, факты/состояние, вместимость, приём.
         Детальная таблица и самостоятельное закрытие по expiry — в разделе 5 спецификации.
-        Тело UTF-8, один объект, без повторяющихся ключей и неизвестных полей.
+        Один JSON-объект; разбор соответствует encoding/json.Unmarshal в Go.
+        Неизвестные поля игнорируются, имена полей сопоставляются без учёта регистра.
+        При повторении строкового поля используется последнее значение.
+        Схемы ниже описывают обычную запись полей; регистр и повтор ключей проверяются HTTP-тестами.
         MIME-тип application/json допускает параметры, например charset=utf-8.
         Начальный настраиваемый лимит тела — 4096 байт, включая JSON-пробелы.
         Это ограничение HTTP, а не maxLength строкового поля JSON Schema.
@@ -47,7 +50,7 @@ paths:
         совпадение или конфликт, без повторной проверки возраста.
         Равенство событий — равенство разобранных значений всех полей, не JSON-байтов.
         Идентификаторы сравниваются как UUID; порядок полей и JSON-пробелы несущественны.
-        Реальный момент времени не извлекается из UUID v7.
+        UUID принимаются без ограничения версии; время из них не извлекается.
         Проверка retention и дальнейшие решения используют единое now_Go внутри
         неделимой операции. При истёкшем retention прежние ID и факты не участвуют
         в проверках, даже если запись физически ещё не удалена. Событие проверяется
@@ -64,7 +67,6 @@ paths:
               started:
                 summary: МИС начинает сценарий
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000101
                   scenario_id: 019a0000-0000-7000-8000-000000000001
                   occurred_at: '2026-10-31T12:00:00.000Z'
@@ -73,7 +75,6 @@ paths:
               credentials:
                 summary: Auth потребовал ввод данных
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000102
                   scenario_id: 019a0000-0000-7000-8000-000000000001
                   occurred_at: '2026-10-31T12:00:01.000Z'
@@ -83,7 +84,6 @@ paths:
               existingSession:
                 summary: Вариант без ввода данных в другой цепочке
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000103
                   scenario_id: 019a0000-0000-7000-8000-000000000002
                   occurred_at: '2026-10-31T12:00:01.000Z'
@@ -93,7 +93,6 @@ paths:
               succeeded:
                 summary: Защищённая страница сформирована
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000104
                   scenario_id: 019a0000-0000-7000-8000-000000000001
                   occurred_at: '2026-10-31T12:00:20.000Z'
@@ -102,7 +101,6 @@ paths:
               failed:
                 summary: Техническая ошибка в отдельной цепочке
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000105
                   scenario_id: 019a0000-0000-7000-8000-000000000003
                   occurred_at: '2026-10-31T12:00:03.000Z'
@@ -111,7 +109,6 @@ paths:
               rejected:
                 summary: Штатный отказ в отдельной цепочке
                 value:
-                  version: 1
                   event_id: 019a0000-0000-7000-8000-000000000106
                   scenario_id: 019a0000-0000-7000-8000-000000000004
                   occurred_at: '2026-10-31T12:00:04.000Z'
@@ -140,28 +137,32 @@ paths:
           $ref: '#/components/responses/CapacityExceeded'
 components:
   schemas:
-    EventVersion:
-      type: integer
-      const: 1
-    UuidV7:
+    Uuid:
       type: string
-      format: uuid
-      minLength: 36
-      maxLength: 36
-      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
-      description: UUID v7 в форме 8-4-4-4-12, регистр hex несущественен.
+      minLength: 32
+      maxLength: 45
+      description: |
+        Любой UUID, разбираемый github.com/google/uuid.Parse, без ограничения версии и variant.
+        Допустимы обычная запись с дефисами, 32 hex-символа, запись в фигурных скобках
+        и URN. Регистр hex несущественен. Полную проверку выполняет парсер UUID в сервисе.
     OccurredAt:
       type: string
-      format: date-time
+      format: event-time
       minLength: 24
       maxLength: 24
-      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.,][0-9]{3}Z$'
       description: |
-        Реальная календарная дата RFC 3339 в UTC, ровно три знака миллисекунд.
+        Календарная дата UTC с миллисекундами; обычная запись — RFC 3339.
+        Разбор выполняет time.Parse с шаблоном 2006-01-02T15:04:05.000Z;
+        дополнительно принимается запятая перед миллисекундами.
         Паттерн не заменяет проверку даты. Проверка возраста выполняется Go отдельно.
     LoginMode:
       type: string
       enum: [credentials, existing_session]
+    AbsentMode:
+      type: [string, 'null']
+      enum: ['', null]
+      description: Отсутствие поля, null и пустая строка означают отсутствие варианта.
     LoginEvent:
       oneOf:
         - $ref: '#/components/schemas/LoginStarted'
@@ -179,15 +180,13 @@ components:
           login_rejected: '#/components/schemas/LoginRejected'
     LoginStarted:
       type: object
-      additionalProperties: false
-      required: [version, event_id, scenario_id, occurred_at, source, type]
+      additionalProperties: true
+      required: [event_id, scenario_id, occurred_at, source, type]
       properties:
-        version:
-          $ref: '#/components/schemas/EventVersion'
         event_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         scenario_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         occurred_at:
           $ref: '#/components/schemas/OccurredAt'
         source:
@@ -196,17 +195,17 @@ components:
         type:
           type: string
           const: login_started
+        mode:
+          $ref: '#/components/schemas/AbsentMode'
     LoginModeDetermined:
       type: object
-      additionalProperties: false
-      required: [version, event_id, scenario_id, occurred_at, source, type, mode]
+      additionalProperties: true
+      required: [event_id, scenario_id, occurred_at, source, type, mode]
       properties:
-        version:
-          $ref: '#/components/schemas/EventVersion'
         event_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         scenario_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         occurred_at:
           $ref: '#/components/schemas/OccurredAt'
         source:
@@ -219,15 +218,13 @@ components:
           $ref: '#/components/schemas/LoginMode'
     LoginSucceeded:
       type: object
-      additionalProperties: false
-      required: [version, event_id, scenario_id, occurred_at, source, type]
+      additionalProperties: true
+      required: [event_id, scenario_id, occurred_at, source, type]
       properties:
-        version:
-          $ref: '#/components/schemas/EventVersion'
         event_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         scenario_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         occurred_at:
           $ref: '#/components/schemas/OccurredAt'
         source:
@@ -236,17 +233,17 @@ components:
         type:
           type: string
           const: login_succeeded
+        mode:
+          $ref: '#/components/schemas/AbsentMode'
     LoginFailed:
       type: object
-      additionalProperties: false
-      required: [version, event_id, scenario_id, occurred_at, source, type]
+      additionalProperties: true
+      required: [event_id, scenario_id, occurred_at, source, type]
       properties:
-        version:
-          $ref: '#/components/schemas/EventVersion'
         event_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         scenario_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         occurred_at:
           $ref: '#/components/schemas/OccurredAt'
         source:
@@ -255,17 +252,17 @@ components:
         type:
           type: string
           const: login_failed
+        mode:
+          $ref: '#/components/schemas/AbsentMode'
     LoginRejected:
       type: object
-      additionalProperties: false
-      required: [version, event_id, scenario_id, occurred_at, source, type]
+      additionalProperties: true
+      required: [event_id, scenario_id, occurred_at, source, type]
       properties:
-        version:
-          $ref: '#/components/schemas/EventVersion'
         event_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         scenario_id:
-          $ref: '#/components/schemas/UuidV7'
+          $ref: '#/components/schemas/Uuid'
         occurred_at:
           $ref: '#/components/schemas/OccurredAt'
         source:
@@ -274,6 +271,8 @@ components:
         type:
           type: string
           const: login_rejected
+        mode:
+          $ref: '#/components/schemas/AbsentMode'
     Error:
       type: object
       additionalProperties: false

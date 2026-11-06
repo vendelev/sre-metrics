@@ -8,7 +8,7 @@ import "time"
 // Пустые поля означают отсутствие нового измерения; нулевая длительность допустима.
 type Measurements struct {
 	Completion         Outcome
-	TechnicalErrorMode LoginMode
+	TechnicalErrorMode OAuthMode
 	SuccessfulDuration *DurationObservation
 }
 
@@ -21,7 +21,7 @@ type MeasurementRecorder interface {
 
 // DurationObservation описывает корректную успешную длительность известного варианта.
 type DurationObservation struct {
-	Mode     LoginMode
+	Mode     OAuthMode
 	Duration time.Duration
 }
 

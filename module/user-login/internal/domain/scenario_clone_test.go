@@ -4,12 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
 func TestScenarioCloneIndependence(t *testing.T) {
 	base := scenarioTime()
-	original := domain.NewScenario("scenario-1")
+	original := domain.NewScenario(uuid.New())
 	mustAccept(t, original.Start(base, base))
 	mustAccept(t, original.DetermineMode(domain.LoginModeCredentials, base))
 	copy := original.Clone()

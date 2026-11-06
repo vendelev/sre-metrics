@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
@@ -14,10 +15,10 @@ func TestScenarioMeasurementsFactOrders(t *testing.T) {
 	for _, outcome := range []domain.Outcome{
 		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected,
 	} {
-		for _, mode := range []domain.LoginMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+		for _, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
 			for _, order := range orders {
 				t.Run(string(outcome)+"/"+string(mode)+"/"+order, func(t *testing.T) {
-					s := domain.NewScenario("scenario-1")
+					s := domain.NewScenario(uuid.New())
 					if got := s.TakeMeasurements(); got != (domain.Measurements{}) {
 						t.Fatal("пустой сценарий не даёт измерений")
 					}
@@ -96,7 +97,7 @@ func TestScenarioDurationMeasurementBoundaries(t *testing.T) {
 	for _, interval := range []time.Duration{-time.Millisecond, 0} {
 		for _, order := range []string{"smf", "sfm", "msf", "mfs", "fsm", "fms"} {
 			t.Run(interval.String()+"/"+order, func(t *testing.T) {
-				s := domain.NewScenario("scenario-1")
+				s := domain.NewScenario(uuid.New())
 				if s.HasNegativeDuration() {
 					t.Fatal("без фактов нет отрицательной длительности")
 				}
@@ -141,7 +142,7 @@ func TestScenarioDurationMeasurementBoundaries(t *testing.T) {
 
 func TestScenarioUnknownMeasurementOnce(t *testing.T) {
 	base := scenarioTime()
-	s := domain.NewScenario("scenario-1")
+	s := domain.NewScenario(uuid.New())
 	mustAccept(t, s.Start(base, base))
 	mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
 	now := base.Add(15 * time.Minute)

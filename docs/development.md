@@ -96,7 +96,7 @@ pkgsite -http=127.0.0.1:6060 .
 occurred_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 curl --max-time 3 -i http://127.0.0.1:8080/events \
   -H 'Content-Type: application/json' \
-  --data-binary "{\"version\":1,\"event_id\":\"019aabcd-0000-7000-8000-000000000001\",\"scenario_id\":\"019aabcd-0000-7000-8000-000000000100\",\"occurred_at\":\"$occurred_at\",\"source\":\"mis\",\"type\":\"login_started\"}"
+  --data-binary "{\"event_id\":\"019aabcd-0000-7000-8000-000000000001\",\"scenario_id\":\"019aabcd-0000-7000-8000-000000000100\",\"occurred_at\":\"$occurred_at\",\"source\":\"mis\",\"type\":\"login_started\"}"
 ```
 
 Ожидается 204 без тела. Получатель OTLP должен быть настроен отдельно; его недоступность

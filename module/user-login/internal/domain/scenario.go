@@ -3,6 +3,8 @@ package domain
 import (
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrConflict означает противоречие ранее принятому факту сценария.
@@ -38,9 +40,9 @@ const (
 // Возраст и транспортная допустимость событий проверяются снаружи.
 // Scenario не обеспечивает потокобезопасность.
 type Scenario struct {
-	id              string
+	id              uuid.UUID
 	startedAt       *time.Time
-	mode            *LoginMode
+	mode            *OAuthMode
 	outcome         Outcome
 	succeededAt     *time.Time
 	firstReceivedAt *time.Time
@@ -49,28 +51,28 @@ type Scenario struct {
 }
 
 // NewScenario создаёт сценарий с идентификатором, пока без фактов входа.
-func NewScenario(id string) *Scenario {
+func NewScenario(id uuid.UUID) *Scenario {
 	return &Scenario{id: id}
 }
 
 // Clone возвращает независимую копию фактов и отметок выданных измерений.
 // Изменение копии не меняет сохранённую сущность.
 func (s *Scenario) Clone() *Scenario {
-	copy := *s
-	copy.startedAt = cloneValue(s.startedAt)
-	copy.mode = cloneValue(s.mode)
-	copy.succeededAt = cloneValue(s.succeededAt)
-	copy.firstReceivedAt = cloneValue(s.firstReceivedAt)
-	copy.closedAt = cloneValue(s.closedAt)
-	return &copy
+	scenario := *s
+	scenario.startedAt = cloneValue(s.startedAt)
+	scenario.mode = cloneValue(s.mode)
+	scenario.succeededAt = cloneValue(s.succeededAt)
+	scenario.firstReceivedAt = cloneValue(s.firstReceivedAt)
+	scenario.closedAt = cloneValue(s.closedAt)
+	return &scenario
 }
 
 func cloneValue[T any](value *T) *T {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	t := *value
+	return &t
 }
 
 // Start сохраняет исходный момент начала входа.
@@ -93,7 +95,7 @@ func (s *Scenario) Start(occurredAt, now time.Time) error {
 // Повтор подтверждает факт, другой вариант даёт ErrConflict.
 // Закрывает истёкшее ожидание; недостающий вариант после unknown даёт ErrScenarioExpired.
 // mode должен быть одним из двух вариантов контракта событий.
-func (s *Scenario) DetermineMode(mode LoginMode, now time.Time) error {
+func (s *Scenario) DetermineMode(mode OAuthMode, now time.Time) error {
 	if err := s.prepareFact(s.CheckMode(mode, now), now); err != nil {
 		return err
 	}
@@ -148,7 +150,7 @@ func (s *Scenario) CheckStart(occurredAt, now time.Time) error {
 
 // CheckMode проверяет вариант без изменений состояния; известный факт можно подтвердить
 // даже после unknown. Противоречие имеет приоритет перед истечением ожидания.
-func (s *Scenario) CheckMode(mode LoginMode, now time.Time) error {
+func (s *Scenario) CheckMode(mode OAuthMode, now time.Time) error {
 	if s.mode != nil {
 		if *s.mode != mode {
 			return ErrConflict
@@ -270,7 +272,7 @@ func (s *Scenario) finish(outcome Outcome, now time.Time) error {
 }
 
 // ID возвращает идентификатор сценария.
-func (s *Scenario) ID() string {
+func (s *Scenario) ID() uuid.UUID {
 	return s.id
 }
 
@@ -283,7 +285,7 @@ func (s *Scenario) StartedAt() (time.Time, bool) {
 }
 
 // Mode возвращает сообщённый вариант входа и признак его наличия.
-func (s *Scenario) Mode() (LoginMode, bool) {
+func (s *Scenario) Mode() (OAuthMode, bool) {
 	if s.mode == nil {
 		return "", false
 	}

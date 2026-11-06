@@ -17,8 +17,8 @@ import (
 // Полный контракт метаданных проверяется отдельно по ResourceMetrics.
 type Values struct {
 	Completed       map[domain.Outcome]int64
-	TechnicalErrors map[domain.LoginMode]int64
-	Durations       map[domain.LoginMode]Duration
+	TechnicalErrors map[domain.OAuthMode]int64
+	Durations       map[domain.OAuthMode]Duration
 }
 
 // Duration — проекция настоящей SDK Histogram, а не собственный накопитель.
@@ -59,8 +59,8 @@ func Read(t testing.TB, r *otel.Recorder) Values {
 	t.Helper()
 	result := Values{
 		Completed:       make(map[domain.Outcome]int64),
-		TechnicalErrors: make(map[domain.LoginMode]int64),
-		Durations:       make(map[domain.LoginMode]Duration),
+		TechnicalErrors: make(map[domain.OAuthMode]int64),
+		Durations:       make(map[domain.OAuthMode]Duration),
 	}
 	for _, scope := range Collect(t, r).ScopeMetrics {
 		for _, m := range scope.Metrics {
@@ -73,7 +73,7 @@ func Read(t testing.TB, r *otel.Recorder) Values {
 						result.Completed[domain.Outcome(v.AsString())] = p.Value
 					case otel.TechnicalErrorsName:
 						v, _ := p.Attributes.Value(attribute.Key("mode"))
-						result.TechnicalErrors[domain.LoginMode(v.AsString())] = p.Value
+						result.TechnicalErrors[domain.OAuthMode(v.AsString())] = p.Value
 					}
 				}
 			case metricdata.Histogram[float64]:
@@ -82,7 +82,7 @@ func Read(t testing.TB, r *otel.Recorder) Values {
 					if len(p.BucketCounts) != 4 {
 						t.Fatalf("неожиданные корзины SDK: %v", p.BucketCounts)
 					}
-					result.Durations[domain.LoginMode(v.AsString())] = Duration{
+					result.Durations[domain.OAuthMode(v.AsString())] = Duration{
 						BucketCounts: [4]uint64(p.BucketCounts), Count: p.Count, SumSeconds: p.Sum,
 					}
 				}

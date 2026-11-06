@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
@@ -57,14 +57,14 @@ func newFixture(t *testing.T, limits memory.Limits) *fixture {
 	return &fixture{observer: observer, store: store, clock: clock, base: base, recorder: recorder}
 }
 
-func uuid(n int) string {
-	return fmt.Sprintf("019aabcd-0000-7000-8000-%012x", n)
+func testID(n int) uuid.UUID {
+	return uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012x", n))
 }
 
 func event(id, scenario int, kind domain.EventType, at time.Time) domain.Event {
 	e := domain.Event{
-		EventID:    uuid(id),
-		ScenarioID: uuid(scenario),
+		EventID:    testID(id),
+		ScenarioID: testID(scenario),
 		Type:       kind,
 		Source:     domain.SourceMIS,
 		OccurredAt: at,
@@ -95,7 +95,7 @@ func scenario(t *testing.T, f *fixture, id int) *domain.Scenario {
 	t.Helper()
 	var result *domain.Scenario
 	if err := f.store.Within(func(state domain.State) error {
-		result, _ = state.FindScenario(uuid(id))
+		result, _ = state.FindScenario(testID(id))
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func hasEvent(t *testing.T, f *fixture, id int) bool {
 	t.Helper()
 	var exists bool
 	if err := f.store.Within(func(state domain.State) error {
-		_, exists = state.FindEvent(uuid(id))
+		_, exists = state.FindEvent(testID(id))
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -147,8 +147,6 @@ func TestProcessDeduplicationAndEquality(t *testing.T) {
 	e := event(1, 100, domain.EventTypeLoginModeDetermined, f.base)
 	process(t, f, e, nil)
 	copy := e.Clone()
-	copy.EventID = strings.ToUpper(copy.EventID)
-	copy.ScenarioID = strings.ToUpper(copy.ScenarioID)
 	copy.OccurredAt = copy.OccurredAt.In(time.FixedZone("UTC+3", 3*60*60))
 	process(t, f, copy, nil)
 	// Изменение входного указателя после приёма не меняет сохранённую историю.
@@ -159,7 +157,7 @@ func TestProcessDeduplicationAndEquality(t *testing.T) {
 		name   string
 		change func(*domain.Event)
 	}{
-		{name: "другой сценарий", change: func(e *domain.Event) { e.ScenarioID = uuid(101) }},
+		{name: "другой сценарий", change: func(e *domain.Event) { e.ScenarioID = testID(101) }},
 		{name: "другое время", change: func(e *domain.Event) { e.OccurredAt = e.OccurredAt.Add(time.Millisecond) }},
 		{name: "другой вариант", change: func(e *domain.Event) { *e.Mode = domain.LoginModeExistingSession }},
 		{name: "другой тип", change: func(e *domain.Event) { e.Type = domain.EventTypeLoginFailed; e.Mode = nil }},
@@ -178,12 +176,9 @@ func TestProcessDeduplicationAndEquality(t *testing.T) {
 	process(t, f, failed, nil)
 	failed.Source = domain.SourceAuth
 	process(t, f, failed, domain.ErrConflict)
-	// Нормализация scenario_id действует не только в дедупликации.
-	upper := event(3, 100, domain.EventTypeLoginSucceeded, f.base)
-	upper.ScenarioID = strings.ToUpper(upper.ScenarioID)
-	process(t, f, upper, nil)
+	process(t, f, event(3, 100, domain.EventTypeLoginSucceeded, f.base), nil)
 	if got := scenario(t, f, 100); got.Outcome() != domain.OutcomeSuccess {
-		t.Fatal("регистр создал отдельный сценарий")
+		t.Fatal("новое событие не дополнило существующий сценарий")
 	}
 }
 
@@ -195,10 +190,10 @@ func TestProcessAgeAndDeduplicationPriority(t *testing.T) {
 	f.clock.Set(f.base.Add(31 * time.Minute))
 	process(t, f, e, nil)
 	changed := e.Clone()
-	changed.ScenarioID = uuid(101)
+	changed.ScenarioID = testID(101)
 	process(t, f, changed, domain.ErrConflict)
 	newID := e.Clone()
-	newID.EventID = uuid(2)
+	newID.EventID = testID(2)
 	_, err := f.observer.Process(newID)
 	if !errors.Is(err, domain.ErrInvalidEvent) || !errors.Is(err, domain.ErrEventTime) {
 		t.Fatalf("возраст должен сохранять обе категории: %v", err)
@@ -469,7 +464,7 @@ func TestCommitRefusalIsAtomic(t *testing.T) {
 			process(t, f, event(1, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
 			before := snapshot(t, f)
 			err := f.store.Within(func(state domain.State) error {
-				s, _ := state.FindScenario(uuid(100))
+				s, _ := state.FindScenario(testID(100))
 				if err := s.Fail(f.base); err != nil {
 					return err
 				}
@@ -495,7 +490,7 @@ func TestProcessUnknownFactPriority(t *testing.T) {
 	cases := []struct {
 		name string
 		kind domain.EventType
-		mode domain.LoginMode
+		mode domain.OAuthMode
 		want error
 	}{
 		{name: "известный вариант", kind: domain.EventTypeLoginModeDetermined, mode: domain.LoginModeCredentials},
@@ -520,7 +515,7 @@ func TestProcessUnknownFactPriority(t *testing.T) {
 				}
 			} else {
 				// Смысловое подтверждение исчерпало последнее место.
-				e.EventID = uuid(3)
+				e.EventID = testID(3)
 				process(t, f, e, domain.ErrCapacityExceeded)
 			}
 			wantUnknown := int64(1)

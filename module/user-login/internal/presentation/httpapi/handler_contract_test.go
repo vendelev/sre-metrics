@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
@@ -23,8 +24,8 @@ func TestHandlerDomainResults(t *testing.T) {
 		before := capture(t, f)
 		bodies := []string{
 			strings.Replace(startedBody(), wireTime, "2026-11-02T12:00:01.000Z", 1),
-			strings.Replace(startedBody(), scenarioID, "019aabcd-0000-7000-8000-000000000200", 1),
-			eventBody("019aabcd-0000-7000-8000-000000000002", "login_started", "mis", "2026-11-02T12:00:01.000Z", ""),
+			strings.Replace(startedBody(), scenarioID.String(), "019aabcd-0000-7000-8000-000000000200", 1),
+			eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_started", "mis", "2026-11-02T12:00:01.000Z", ""),
 		}
 		for _, body := range bodies {
 			post(t, f, body, 409, "event_conflict")
@@ -37,8 +38,8 @@ func TestHandlerDomainResults(t *testing.T) {
 		f := newFixture(t, memory.Limits{MaxScenarios: 1, MaxEventsPerScenario: 32})
 		post(t, f, startedBody(), 204, "")
 		before := capture(t, f)
-		body := eventBody("019aabcd-0000-7000-8000-000000000002", "login_started", "mis", wireTime, "")
-		body = strings.Replace(body, scenarioID, "019aabcd-0000-7000-8000-000000000200", 1)
+		body := eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_started", "mis", wireTime, "")
+		body = strings.Replace(body, scenarioID.String(), "019aabcd-0000-7000-8000-000000000200", 1)
 		post(t, f, body, 503, "capacity_exceeded")
 		if !reflect.DeepEqual(before, capture(t, f)) {
 			t.Fatal("503 при создании записи изменил состояние")
@@ -53,7 +54,7 @@ func TestHandlerDomainResults(t *testing.T) {
 			post(
 				t,
 				f,
-				eventBody("019aabcd-0000-7000-8000-000000000002", kind, "mis", wireTime, ""),
+				eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), kind, "mis", wireTime, ""),
 				410,
 				"scenario_expired",
 			)
@@ -66,7 +67,7 @@ func TestHandlerDomainResults(t *testing.T) {
 	t.Run("expiry с 503 BR-55 AC-47", func(t *testing.T) {
 		f := newFixture(t, memory.DefaultLimits())
 		for i := 1; i <= 32; i++ {
-			id := fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i)
+			id := uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i))
 			post(t, f, eventBody(id, "login_mode_determined", "auth", wireTime, "credentials"), 204, "")
 		}
 		f.clock.now = f.clock.now.Add(15 * time.Minute)
@@ -77,7 +78,7 @@ func TestHandlerDomainResults(t *testing.T) {
 			t.Fatal("точный повтор запустил expiry")
 		}
 		body := eventBody(
-			"019aabcd-0000-7000-8000-000000000033",
+			uuid.MustParse("019aabcd-0000-7000-8000-000000000033"),
 			"login_mode_determined",
 			"auth",
 			wireTime,
@@ -143,7 +144,7 @@ func TestHandlerRetentionAndOldDuplicate(t *testing.T) {
 			post(
 				t,
 				f,
-				eventBody("019aabcd-0000-7000-8000-000000000002", "login_succeeded", "mis", wireTime, ""),
+				eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_succeeded", "mis", wireTime, ""),
 				204,
 				"",
 			)
@@ -152,7 +153,7 @@ func TestHandlerRetentionAndOldDuplicate(t *testing.T) {
 				t,
 				f,
 				eventBody(
-					"019aabcd-0000-7000-8000-000000000003",
+					uuid.MustParse("019aabcd-0000-7000-8000-000000000003"),
 					"login_mode_determined",
 					"auth",
 					wireTime,
@@ -201,7 +202,7 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 			}
 			start := eventBody(eventID, "login_started", "mis", "2026-11-02T12:00:05.000Z", "")
 			success := eventBody(
-				"019aabcd-0000-7000-8000-000000000002",
+				uuid.MustParse("019aabcd-0000-7000-8000-000000000002"),
 				"login_succeeded",
 				"mis",
 				"2026-11-02T12:00:03.000Z",
@@ -215,7 +216,7 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 				t,
 				f,
 				eventBody(
-					"019aabcd-0000-7000-8000-000000000003",
+					uuid.MustParse("019aabcd-0000-7000-8000-000000000003"),
 					"login_mode_determined",
 					"auth",
 					wireTime,
@@ -240,11 +241,11 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 			if err := json.Unmarshal(f.logs.Bytes(), &entry); err != nil {
 				t.Fatal(err)
 			}
-			if len(entry) != 4 || entry["scenario_id"] != scenarioID || entry["level"] != "WARN" ||
+			if len(entry) != 4 || entry["scenario_id"] != scenarioID.String() || entry["level"] != "WARN" ||
 				!strings.Contains(fmt.Sprint(entry["msg"]), "раньше начала") {
 				t.Fatalf("неверный диагностический лог: %s", f.logs.String())
 			}
-			for _, forbidden := range []string{"event_id", "occurred_at", "credentials", eventID, "login_succeeded"} {
+			for _, forbidden := range []string{"event_id", "occurred_at", "credentials", eventID.String(), "login_succeeded"} {
 				if strings.Contains(f.logs.String(), forbidden) {
 					t.Fatalf("диагностика раскрыла событие: %s", f.logs.String())
 				}

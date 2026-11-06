@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
@@ -47,5 +48,15 @@ func TestUnexpectedStoreError(t *testing.T) {
 				t.Fatalf("неожиданный сбой потерял категорию или причину: %v", err)
 			}
 		})
+	}
+}
+
+func validEvent() domain.Event {
+	return domain.Event{
+		EventID:    uuid.MustParse("019aabcd-0000-7000-8000-000000000001"),
+		ScenarioID: uuid.MustParse("019aabcd-0000-7000-8000-000000000100"),
+		OccurredAt: time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC),
+		Type:       domain.EventTypeLoginStarted,
+		Source:     domain.SourceMIS,
 	}
 }

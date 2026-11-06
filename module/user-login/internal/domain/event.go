@@ -3,19 +3,27 @@ package domain
 import (
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-// ErrEventTime означает выход исходного времени за допустимый диапазон нового события.
-var ErrEventTime = errors.New("время нового события вне допустимого диапазона")
+// Source обозначает приложение, сообщившее факт.
+type Source string
 
-// CheckEventTime проверяет BR-37 без изменения состояния: обе границы включительны.
-// Применяется только к новому event_id после дедупликации, с единым временем операции.
-// Не проверяет wire-формат времени и не меняет deadline сценария.
-func CheckEventTime(occurredAt, now time.Time) error {
-	if occurredAt.Before(now.Add(-30*time.Minute)) || occurredAt.After(now.Add(30*time.Second)) {
-		return ErrEventTime
+const (
+	SourceMIS  Source = "mis"
+	SourceAuth Source = "auth"
+)
+
+func ParseSource(value string) (Source, error) {
+	s := Source(value)
+	switch s {
+	case SourceMIS,
+		SourceAuth:
+		return s, nil
+	default:
+		return "", errors.New("невалидное название приложения")
 	}
-	return nil
 }
 
 // EventType обозначает тип факта входа.
@@ -29,32 +37,82 @@ const (
 	EventTypeLoginRejected       EventType = "login_rejected"
 )
 
-// Source обозначает приложение, сообщившее факт.
-type Source string
+func ParseEventType(value string, source Source, mode *OAuthMode) (EventType, error) {
+	er := errors.New("невалидный тип события")
+	et := EventType(value)
+	switch et {
+	case EventTypeLoginStarted,
+		EventTypeLoginModeDetermined,
+		EventTypeLoginSucceeded,
+		EventTypeLoginFailed,
+		EventTypeLoginRejected:
+		break
+	default:
+		return "", er
+	}
+
+	isAuthService := mode != nil
+
+	switch et {
+	case EventTypeLoginStarted,
+		EventTypeLoginSucceeded:
+		if source != SourceMIS || isAuthService {
+			return "", er
+		}
+	case EventTypeLoginFailed,
+		EventTypeLoginRejected:
+		if (source != SourceMIS && source != SourceAuth) || isAuthService {
+			return "", er
+		}
+	case EventTypeLoginModeDetermined:
+		if source != SourceAuth || mode == nil {
+			return "", er
+		}
+
+		if *mode != LoginModeCredentials && *mode != LoginModeExistingSession {
+			return "", er
+		}
+	}
+
+	return et, nil
+}
+
+// OAuthMode обозначает вариант входа в сервисе авторизации.
+type OAuthMode string
 
 const (
-	SourceMIS  Source = "mis"
-	SourceAuth Source = "auth"
+	// LoginModeCredentials новый вход по логину и паролю
+	LoginModeCredentials OAuthMode = "credentials"
+	// LoginModeExistingSession повторный вход, используется сохраненная сессия
+	LoginModeExistingSession OAuthMode = "existing_session"
 )
 
-// LoginMode обозначает вариант входа.
-type LoginMode string
+// ParseMode разбирает вариант входа; пустая строка означает отсутствие значения.
+func ParseMode(value *string) (*OAuthMode, error) {
+	if value == nil || *value == "" {
+		return nil, nil
+	}
 
-const (
-	LoginModeCredentials     LoginMode = "credentials"
-	LoginModeExistingSession LoginMode = "existing_session"
-)
+	m := OAuthMode(*value)
+
+	switch m {
+	case LoginModeCredentials, LoginModeExistingSession:
+		return &m, nil
+	default:
+		return nil, errors.New("невалидный вариант входа")
+	}
+}
 
 // Event объединяет предметные данные одного факта входа.
 // Само объявление структуры не обеспечивает проверку контракта.
 type Event struct {
-	EventID    string
-	ScenarioID string
+	EventID    uuid.UUID
+	ScenarioID uuid.UUID
 	OccurredAt time.Time
 	Source     Source
 	Type       EventType
 	// Mode содержит вариант входа; nil означает его отсутствие.
-	Mode *LoginMode
+	Mode *OAuthMode
 }
 
 // Clone возвращает независимое событие, включая значение необязательного Mode.

@@ -103,8 +103,8 @@ func processExportEvent(
 ) string {
 	t.Helper()
 	e := domain.Event{
-		EventID:    uuid.Must(uuid.NewV7()).String(),
-		ScenarioID: fmt.Sprintf("019aabcd-0000-7000-9000-%012x", scenario),
+		EventID:    uuid.Must(uuid.NewV7()),
+		ScenarioID: uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-9000-%012x", scenario)),
 		Source:     domain.SourceMIS,
 		Type:       kind,
 		OccurredAt: at,
@@ -116,7 +116,7 @@ func processExportEvent(
 	if _, err := o.Process(e); err != nil {
 		t.Fatal(err)
 	}
-	return e.EventID
+	return e.EventID.String()
 }
 
 func attrs(values []*commonpb.KeyValue) map[string]string {
@@ -404,7 +404,7 @@ func TestPipelineTimeoutAndHTTPIndependence(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := fmt.Sprintf(
-		`{"version":1,"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000100","occurred_at":%q,"source":"mis","type":"login_succeeded"}`,
+		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000100","occurred_at":%q,"source":"mis","type":"login_succeeded"}`,
 		now.Format("2006-01-02T15:04:05.000Z"),
 	)
 	request := httptest.NewRequest(http.MethodPost, "/events", strings.NewReader(body))

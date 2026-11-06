@@ -125,7 +125,7 @@ func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recor
 	} {
 		r.completed.Add(context.Background(), 0, metric.WithAttributes(attribute.String("outcome", string(outcome))))
 	}
-	for _, mode := range []domain.LoginMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for _, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
 		r.technicalErrors.Add(context.Background(), 0, metric.WithAttributes(attribute.String("mode", string(mode))))
 	}
 	return r, nil

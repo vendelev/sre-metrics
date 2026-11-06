@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
@@ -27,7 +28,7 @@ func NewLoginObserver(store domain.Store, clock domain.Clock) (*LoginObserver, e
 // При непустом NegativeDurationScenarioID вызывающий код должен записать диагностический
 // лог с этим ID без полного события. Process уже освободил защищённый участок.
 type ProcessResult struct {
-	NegativeDurationScenarioID string
+	NegativeDurationScenarioID uuid.UUID
 }
 
 func operationError(operation string, err error) error {

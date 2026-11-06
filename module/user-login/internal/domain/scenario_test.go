@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
 // BR-04, AC-17: сравнивается момент времени, первое начало неизменяемо.
 func TestScenarioStartConfirmationAndConflict(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
-	scenario := domain.NewScenario("scenario-1")
+	scenario := domain.NewScenario(uuid.New())
 	if err := scenario.Start(startedAt, startedAt); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
@@ -35,7 +36,7 @@ func TestScenarioStartConfirmationAndConflict(t *testing.T) {
 // BR-05, AC-22: первый вариант сохраняется при подтверждении и конфликте.
 func TestScenarioDetermineModeConfirmationAndConflict(t *testing.T) {
 	now := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
-	scenario := domain.NewScenario("scenario-1")
+	scenario := domain.NewScenario(uuid.New())
 	if err := scenario.DetermineMode(domain.LoginModeCredentials, now); err != nil {
 		t.Fatalf("подготовка варианта: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestScenarioOutcomeConfirmationsAndConflicts(t *testing.T) {
 	for _, first := range outcomes {
 		for _, next := range outcomes {
 			t.Run(first.name+"/"+next.name, func(t *testing.T) {
-				scenario := domain.NewScenario("scenario-1")
+				scenario := domain.NewScenario(uuid.New())
 				if err := scenario.Start(startedAt, startedAt); err != nil {
 					t.Fatalf("подготовка начала: %v", err)
 				}
@@ -140,7 +141,7 @@ func TestScenarioOutcomeConfirmationsAndConflicts(t *testing.T) {
 func TestScenarioSucceedConfirmationPreservesTime(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
 	succeededAt := startedAt.Add(4 * time.Second)
-	scenario := domain.NewScenario("scenario-1")
+	scenario := domain.NewScenario(uuid.New())
 	if err := scenario.Start(startedAt, startedAt); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
@@ -162,7 +163,8 @@ func TestScenarioSucceedConfirmationPreservesTime(t *testing.T) {
 func TestScenarioSuccessfulPath(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
 	succeededAt := startedAt.Add(4 * time.Second)
-	scenario := domain.NewScenario("scenario-1")
+	id := uuid.New()
+	scenario := domain.NewScenario(id)
 
 	if err := scenario.Start(startedAt, startedAt.Add(time.Second)); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
@@ -174,8 +176,8 @@ func TestScenarioSuccessfulPath(t *testing.T) {
 		t.Fatalf("подготовка успеха: %v", err)
 	}
 
-	if got := scenario.ID(); got != "scenario-1" {
-		t.Errorf("идентификатор: получено %q, ожидалось %q", got, "scenario-1")
+	if got := scenario.ID(); got != id {
+		t.Errorf("идентификатор: получено %q, ожидалось %q", got, id)
 	}
 	if got, ok := scenario.StartedAt(); !ok || !got.Equal(startedAt) {
 		t.Errorf("начало: получено (%v, %t), ожидалось (%v, true)", got, ok, startedAt)
@@ -195,7 +197,7 @@ func TestScenarioSuccessfulPath(t *testing.T) {
 }
 
 func TestScenarioSuccessfulDurationUnavailableBeforeSuccess(t *testing.T) {
-	scenario := domain.NewScenario("scenario-1")
+	scenario := domain.NewScenario(uuid.New())
 	if got, ok := scenario.SuccessfulDuration(); ok {
 		t.Fatalf("до начала длительность недоступна: получено (%v, true)", got)
 	}
@@ -242,7 +244,7 @@ func TestScenarioSuccessfulDurationBoundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			startedAt := time.Date(2026, time.November, 2, 12, 0, 5, 0, time.UTC)
 			succeededAt := startedAt.Add(tt.interval)
-			scenario := domain.NewScenario("scenario-1")
+			scenario := domain.NewScenario(uuid.New())
 			if err := scenario.Start(startedAt, startedAt); err != nil {
 				t.Fatalf("подготовка начала: %v", err)
 			}
@@ -276,7 +278,7 @@ func TestScenarioWaitingBoundaries(t *testing.T) {
 				name = "с началом/" + offset.String()
 			}
 			t.Run(name, func(t *testing.T) {
-				s := domain.NewScenario("scenario-1")
+				s := domain.NewScenario(uuid.New())
 				var deadline time.Time
 				if withStart {
 					mustAccept(t, s.Start(base.Add(-time.Minute), base))
@@ -315,7 +317,7 @@ func TestScenarioWaitingBoundaries(t *testing.T) {
 }
 
 func TestScenarioEmptyLifecycle(t *testing.T) {
-	s := domain.NewScenario("scenario-1")
+	s := domain.NewScenario(uuid.New())
 	getters := []struct {
 		name string
 		get  func() (time.Time, bool)
@@ -376,7 +378,7 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := domain.NewScenario("scenario-1")
+			s := domain.NewScenario(uuid.New())
 			mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
 			mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base.Add(30*time.Second)))
 			assertMoment(t, "срок после подтверждения", s.Deadline, base.Add(15*time.Minute))
@@ -405,7 +407,7 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 	}
 	for _, age := range []time.Duration{15 * time.Minute, 20 * time.Minute} {
 		t.Run("первое начало/"+age.String(), func(t *testing.T) {
-			s := domain.NewScenario("scenario-1")
+			s := domain.NewScenario(uuid.New())
 			mustAccept(t, s.Start(base.Add(-age), base))
 			if s.Outcome() != domain.OutcomeUnknown {
 				t.Fatal("просроченное первое начало должно сразу дать unknown")
@@ -423,7 +425,7 @@ func TestScenarioApplicationOutcomeLateFactsAndRetention(t *testing.T) {
 		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected,
 	} {
 		t.Run(string(outcome), func(t *testing.T) {
-			s := domain.NewScenario("scenario-1")
+			s := domain.NewScenario(uuid.New())
 			mustAccept(t, applyOutcome(s, outcome, base.Add(-time.Minute), base))
 			assertMoment(t, "первое получение", s.FirstReceivedAt, base)
 			assertMoment(t, "закрытие без начала", s.ClosedAt, base)
@@ -490,7 +492,7 @@ func TestScenarioUnknownFacts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := domain.NewScenario("scenario-1")
+			s := domain.NewScenario(uuid.New())
 			if tt.withStart {
 				mustAccept(t, s.Start(base, base))
 			}
@@ -519,7 +521,7 @@ func TestScenarioUnknownFacts(t *testing.T) {
 // BR-50, BR-55: чистая проверка, самостоятельное закрытие и приём не слиты.
 func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 	base := scenarioTime()
-	s := domain.NewScenario("scenario-1")
+	s := domain.NewScenario(uuid.New())
 	mustAccept(t, s.Start(base, base))
 	mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
 	now := base.Add(15 * time.Minute)
@@ -575,7 +577,7 @@ func TestScenarioFinishAtDeadline(t *testing.T) {
 	} {
 		for _, offset := range []time.Duration{-time.Millisecond, 0, time.Millisecond} {
 			t.Run(string(outcome)+"/"+offset.String(), func(t *testing.T) {
-				s := domain.NewScenario("scenario-1")
+				s := domain.NewScenario(uuid.New())
 				mustAccept(t, s.Start(base, base))
 				now := base.Add(15*time.Minute + offset)
 				err := applyOutcome(s, outcome, base.Add(time.Second), now)

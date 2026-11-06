@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
@@ -82,9 +83,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, status, code)
 		return
 	}
-	if result.NegativeDurationScenarioID != "" {
+	if result.NegativeDurationScenarioID != uuid.Nil {
 		h.logger.WarnContext(r.Context(), "исходный момент успеха раньше начала: длительность не учитывается",
-			slog.String("scenario_id", result.NegativeDurationScenarioID))
+			slog.String("scenario_id", result.NegativeDurationScenarioID.String()))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

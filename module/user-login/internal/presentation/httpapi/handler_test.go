@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
@@ -22,9 +23,9 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
 
-const (
-	scenarioID = "019aabcd-0000-7000-8000-000000000100"
-	eventID    = "019aabcd-0000-7000-8000-000000000001"
+var (
+	scenarioID = uuid.MustParse("019aabcd-0000-7000-8000-000000000100")
+	eventID    = uuid.MustParse("019aabcd-0000-7000-8000-000000000001")
 	wireTime   = "2026-11-02T12:00:00.000Z"
 )
 
@@ -112,7 +113,8 @@ func TestHandlerErrorLogging(t *testing.T) {
 					t.Errorf("поле %s: получено %v, ожидалось %s", key, record[key], want)
 				}
 			}
-			if strings.Contains(logs.String(), eventID) || strings.Contains(logs.String(), scenarioID) {
+			if strings.Contains(logs.String(), eventID.String()) ||
+				strings.Contains(logs.String(), scenarioID.String()) {
 				t.Fatal("лог содержит данные входящего события")
 			}
 			if strings.Contains(response.Body.String(), tt.err.Error()) {
@@ -122,9 +124,9 @@ func TestHandlerErrorLogging(t *testing.T) {
 	}
 }
 
-func eventBody(id, kind, source, at, mode string) string {
-	body := fmt.Sprintf(`{"version":1,"event_id":%q,"scenario_id":%q,"occurred_at":%q,"source":%q,"type":%q`,
-		id, scenarioID, at, source, kind)
+func eventBody(id uuid.UUID, kind, source, at, mode string) string {
+	body := fmt.Sprintf(`{"event_id":%q,"scenario_id":%q,"occurred_at":%q,"source":%q,"type":%q`,
+		id.String(), scenarioID, at, source, kind)
 	if mode != "" {
 		body += fmt.Sprintf(`,"mode":%q`, mode)
 	}
@@ -234,12 +236,18 @@ func TestHandlerSuccessAndEquivalentDuplicates(t *testing.T) {
 	post(
 		t,
 		f,
-		eventBody("019aabcd-0000-7000-8000-000000000002", "login_mode_determined", "auth", wireTime, "credentials"),
+		eventBody(
+			uuid.MustParse("019aabcd-0000-7000-8000-000000000002"),
+			"login_mode_determined",
+			"auth",
+			wireTime,
+			"credentials",
+		),
 		204,
 		"",
 	)
 	success := eventBody(
-		"019aabcd-0000-7000-8000-000000000003",
+		uuid.MustParse("019aabcd-0000-7000-8000-000000000003"),
 		"login_succeeded",
 		"mis",
 		"2026-11-02T12:00:20.000Z",
@@ -251,7 +259,7 @@ func TestHandlerSuccessAndEquivalentDuplicates(t *testing.T) {
 		" \n\t" + success + "\r\n",
 		strings.ReplaceAll(success, "019aabcd", "019AABCD"),
 		strings.ReplaceAll(success, "login_succeeded", `login_\u0073ucceeded`),
-		`{"type":"login_succeeded","source":"mis","occurred_at":"2026-11-02T12:00:20.000Z","scenario_id":"` + scenarioID + `","event_id":"019aabcd-0000-7000-8000-000000000003","version":1.0}`,
+		`{"type":"login_succeeded","source":"mis","occurred_at":"2026-11-02T12:00:20.000Z","scenario_id":"` + scenarioID.String() + `","event_id":"019aabcd-0000-7000-8000-000000000003"}`,
 	}
 	for _, body := range variants {
 		post(t, f, body, 204, "")
@@ -268,14 +276,14 @@ func TestHandlerSuccessAndEquivalentDuplicates(t *testing.T) {
 
 // capture читает состояние без обслуживания, включая сохранённые ID и агрегаты.
 type stateSnapshot struct {
-	scenarios  map[string]*domain.Scenario
-	events     map[string]domain.Event
+	scenarios  map[uuid.UUID]*domain.Scenario
+	events     map[uuid.UUID]domain.Event
 	aggregates oteltest.Values
 }
 
 func capture(t *testing.T, f *fixture) stateSnapshot {
 	t.Helper()
-	snapshot := stateSnapshot{scenarios: make(map[string]*domain.Scenario), events: make(map[string]domain.Event)}
+	snapshot := stateSnapshot{scenarios: make(map[uuid.UUID]*domain.Scenario), events: make(map[uuid.UUID]domain.Event)}
 	if err := f.store.Within(func(s domain.State) error {
 		if err := s.VisitScenarios(func(scenario *domain.Scenario) error {
 			snapshot.scenarios[scenario.ID()] = scenario
@@ -284,7 +292,7 @@ func capture(t *testing.T, f *fixture) stateSnapshot {
 			return err
 		}
 		for i := 1; i <= 40; i++ {
-			id := fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i)
+			id := uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i))
 			if event, ok := s.FindEvent(id); ok {
 				snapshot.events[id] = event
 			}
@@ -295,6 +303,33 @@ func capture(t *testing.T, f *fixture) stateSnapshot {
 	}
 	snapshot.aggregates = oteltest.Read(t, f.recorder)
 	return snapshot
+}
+
+func TestCaptureEventIndex(t *testing.T) {
+	f := newFixture(t, memory.DefaultLimits())
+	event := domain.Event{
+		EventID:    eventID,
+		ScenarioID: scenarioID,
+		OccurredAt: f.clock.now,
+		Source:     domain.SourceMIS,
+		Type:       domain.EventTypeLoginStarted,
+	}
+	if _, err := f.observer.Process(event); err != nil {
+		t.Fatal(err)
+	}
+	before := capture(t, f)
+	if len(before.events) != 1 || before.events[eventID].EventID != eventID {
+		t.Fatal("снимок не содержит принятый ID события")
+	}
+	if err := f.store.Within(func(state domain.State) error {
+		return state.DeleteScenario(scenarioID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after := capture(t, f)
+	if len(after.events) != 0 || reflect.DeepEqual(before, after) {
+		t.Fatal("снимок не отразил удаление события из индекса")
+	}
 }
 
 func TestHandlerMethodsAndMIME(t *testing.T) {
@@ -445,7 +480,7 @@ func TestHandlerProcessErrors(t *testing.T) {
 		{"срок", domain.ErrScenarioExpired, 410, "scenario_expired"},
 		{"вместимость", domain.ErrCapacityExceeded, 503, "capacity_exceeded"},
 		{"внутренняя", domain.ErrInternal, 500, "internal_error"},
-		{"неожиданная", errors.New("секретный внутренний текст " + eventID), 500, "internal_error"},
+		{"неожиданная", errors.New("секретный внутренний текст " + eventID.String()), 500, "internal_error"},
 	} {
 		for _, wrapped := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/обёртка=%t", tc.name, wrapped), func(t *testing.T) {
@@ -468,7 +503,7 @@ func TestHandlerProcessErrors(t *testing.T) {
 type failingStore struct{}
 
 func (failingStore) Within(func(domain.State) error) error {
-	return errors.New("внутренний сбой " + scenarioID)
+	return errors.New("внутренний сбой " + scenarioID.String())
 }
 
 func TestHandlerUnexpectedStoreError(t *testing.T) {

@@ -8,23 +8,28 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
-// Process обрабатывает предметное событие после транспортной валидации версии 1.
-// Защитная проверка прямого вызова выполняется до доступа к состоянию; её отказ
-// ничего не меняет. Ошибка последующей обработки не означает общий rollback:
-// удаление по retention и уже зафиксированное самостоятельное закрытие сохраняются.
+// Process обрабатывает предметное событие после транспортной валидации.
 func (o *LoginObserver) Process(event domain.Event) (ProcessResult, error) {
-	event, err := prepareEvent(event)
-	if err != nil {
-		return ProcessResult{}, err
-	}
 	var result ProcessResult
-	err = o.store.Within(func(state domain.State) error {
+	err := o.store.Within(func(state domain.State) error {
 		now := o.clock.Now()
 		var err error
 		result, err = processEvent(state, event, now)
 		return err
 	})
 	return result, operationError("обработка события", err)
+}
+
+func equalEvents(a, b domain.Event) bool {
+	sameIDs := a.EventID == b.EventID && a.ScenarioID == b.ScenarioID
+	sameFact := a.Source == b.Source && a.Type == b.Type && a.OccurredAt.Equal(b.OccurredAt)
+	if !sameIDs || !sameFact {
+		return false
+	}
+	if a.Mode == nil || b.Mode == nil {
+		return a.Mode == nil && b.Mode == nil
+	}
+	return *a.Mode == *b.Mode
 }
 
 func processEvent(state domain.State, event domain.Event, now time.Time) (ProcessResult, error) {

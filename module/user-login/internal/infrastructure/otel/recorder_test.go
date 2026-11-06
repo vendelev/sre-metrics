@@ -47,11 +47,17 @@ func newStack(t *testing.T) *stack {
 	return &stack{recorder: r, observer: observer, now: now}
 }
 
-func (s *stack) event(t *testing.T, scenario string, kind domain.EventType, mode domain.LoginMode, at time.Time) {
+func (s *stack) event(t *testing.T, scenario string, kind domain.EventType, mode domain.OAuthMode, at time.Time) {
 	t.Helper()
 	s.next++
 	id := fmt.Sprintf("019aabcd-0000-7000-8000-%012x", s.next)
-	e := domain.Event{EventID: id, ScenarioID: scenario, Type: kind, Source: domain.SourceMIS, OccurredAt: at}
+	e := domain.Event{
+		EventID:    uuid.MustParse(id),
+		ScenarioID: uuid.MustParse(scenario),
+		Type:       kind,
+		Source:     domain.SourceMIS,
+		OccurredAt: at,
+	}
 	if kind == domain.EventTypeLoginModeDetermined {
 		e.Source, e.Mode = domain.SourceAuth, &mode
 	}
@@ -253,7 +259,7 @@ func TestRecorderSDKContract(t *testing.T) {
 		60 * time.Second,
 		61 * time.Second,
 	}
-	for index, mode := range []domain.LoginMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for index, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
 		for i, duration := range durations {
 			scenario := fmt.Sprintf("019aabcd-0000-7000-9000-%012x", 100+index*100+i)
 			s.event(t, scenario, domain.EventTypeLoginSucceeded, "", s.now)
@@ -270,7 +276,7 @@ func TestRecorderSDKContract(t *testing.T) {
 	if values.Completed[domain.OutcomeSuccess] != 14 || values.Completed[domain.OutcomeTechnicalError] != 2 {
 		t.Fatalf("Counter: %+v", values)
 	}
-	for _, mode := range []domain.LoginMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for _, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
 		h := values.Durations[mode]
 		if values.TechnicalErrors[mode] != 1 || h.Count != 7 || h.BucketCounts != [4]uint64{2, 2, 2, 1} {
 			t.Fatalf("измерения %s: %+v", mode, values)

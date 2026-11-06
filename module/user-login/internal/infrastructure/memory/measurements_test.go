@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
@@ -104,11 +105,11 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 			if order == "успех первым" {
 				first, second = finished, started
 			}
-			if got := process(t, f, first, nil); got.NegativeDurationScenarioID != "" {
+			if got := process(t, f, first, nil); got.NegativeDurationScenarioID != uuid.Nil {
 				t.Fatal("недостаток фактов не является отрицательной длительностью")
 			}
 			got := process(t, f, second, nil)
-			if got.NegativeDurationScenarioID != uuid(100) {
+			if got.NegativeDurationScenarioID != testID(100) {
 				t.Fatalf("отсутствует безопасная диагностика: %+v", got)
 			}
 			// Диагностика возвращена наружу после освобождения блокировки, снимок доступен.
@@ -116,7 +117,7 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 				t.Fatal("диагностика изменила успех")
 			}
 			process(t, f, event(3, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
-			if result := process(t, f, second, nil); result.NegativeDurationScenarioID != "" {
+			if result := process(t, f, second, nil); result.NegativeDurationScenarioID != uuid.Nil {
 				t.Fatal("повтор повторил диагностику")
 			}
 			if result := process(
@@ -124,7 +125,7 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 				f,
 				event(4, 100, domain.EventTypeLoginSucceeded, f.base),
 				nil,
-			); result.NegativeDurationScenarioID != "" {
+			); result.NegativeDurationScenarioID != uuid.Nil {
 				t.Fatal("смысловое подтверждение повторило диагностику")
 			}
 			if snapshot(t, f).Durations[domain.LoginModeCredentials].Count != 0 {

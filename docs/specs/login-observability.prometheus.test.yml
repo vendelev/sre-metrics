@@ -1,4 +1,4 @@
-# Редакция комплекта 0.28. Выполнение: promtool test rules <этот файл>.
+# Редакция комплекта 0.29. Выполнение: promtool test rules <этот файл>.
 # Приросты пропорциональны; это тесты долей, не точного журнала событий.
 rule_files:
   - login-observability.prometheus.rules.yml

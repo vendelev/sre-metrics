@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
@@ -24,14 +25,14 @@ func DefaultLimits() Limits {
 type Store struct {
 	mu        sync.Mutex
 	limits    Limits
-	scenarios map[string]*record
-	events    map[string]domain.Event
+	scenarios map[uuid.UUID]*record
+	events    map[uuid.UUID]domain.Event
 	recorder  domain.MeasurementRecorder
 }
 
 type record struct {
 	scenario *domain.Scenario
-	eventIDs map[string]struct{}
+	eventIDs map[uuid.UUID]struct{}
 }
 
 var _ domain.Store = (*Store)(nil)
@@ -47,8 +48,8 @@ func NewStore(limits Limits, recorder domain.MeasurementRecorder) (*Store, error
 		return nil, errors.New("отсутствует регистратор измерений")
 	}
 	return &Store{
-		limits: limits, scenarios: make(map[string]*record),
-		events: make(map[string]domain.Event), recorder: recorder,
+		limits: limits, scenarios: make(map[uuid.UUID]*record),
+		events: make(map[uuid.UUID]domain.Event), recorder: recorder,
 	}, nil
 }
 
@@ -71,7 +72,7 @@ type state struct {
 	store *Store
 }
 
-func (s *state) FindScenario(id string) (*domain.Scenario, bool) {
+func (s *state) FindScenario(id uuid.UUID) (*domain.Scenario, bool) {
 	if s.store == nil {
 		return nil, false
 	}
@@ -82,7 +83,7 @@ func (s *state) FindScenario(id string) (*domain.Scenario, bool) {
 	return record.scenario.Clone(), true
 }
 
-func (s *state) FindEvent(id string) (domain.Event, bool) {
+func (s *state) FindEvent(id uuid.UUID) (domain.Event, bool) {
 	if s.store == nil {
 		return domain.Event{}, false
 	}
@@ -104,7 +105,7 @@ func (s *state) VisitScenarios(visit func(*domain.Scenario) error) error {
 	return nil
 }
 
-func (s *state) CheckCapacity(scenarioID string) error {
+func (s *state) CheckCapacity(scenarioID uuid.UUID) error {
 	if s.store == nil {
 		return domain.ErrInternal
 	}
@@ -124,7 +125,7 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 	if s.store == nil || scenario == nil {
 		return domain.ErrInternal
 	}
-	if scenario.ID() == "" || !validMeasurements(measurements) {
+	if !validMeasurements(measurements) {
 		return domain.ErrInternal
 	}
 	entry, exists := s.store.scenarios[scenario.ID()]
@@ -133,7 +134,7 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 			return domain.ErrInternal
 		}
 	} else {
-		if event.EventID == "" || event.ScenarioID != scenario.ID() {
+		if event.ScenarioID != scenario.ID() {
 			return domain.ErrInternal
 		}
 		if _, ok := s.store.events[event.EventID]; ok {
@@ -146,7 +147,7 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 	// Все проверки выполнены до первой записи. После сохранения отметок вызывается
 	// только локальный SDK. Между инструментами нет транзакции или механизма отката.
 	if !exists {
-		entry = &record{eventIDs: make(map[string]struct{})}
+		entry = &record{eventIDs: make(map[uuid.UUID]struct{})}
 		s.store.scenarios[scenario.ID()] = entry
 	}
 	entry.scenario = scenario.Clone()
@@ -158,7 +159,7 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 	return nil
 }
 
-func (s *state) DeleteScenario(id string) error {
+func (s *state) DeleteScenario(id uuid.UUID) error {
 	if s.store == nil {
 		return domain.ErrInternal
 	}

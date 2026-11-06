@@ -2,7 +2,7 @@ package memory
 
 import "github.com/vendelev/sre-metrics/user-login/internal/domain"
 
-func validMode(mode domain.LoginMode) bool {
+func validMode(mode domain.OAuthMode) bool {
 	return mode == domain.LoginModeCredentials || mode == domain.LoginModeExistingSession
 }
 

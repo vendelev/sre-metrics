@@ -1,4 +1,4 @@
-"""Validate specification artifacts, not the unimplemented Go service.
+"""Проверка артефактов спецификации, не реализации Go-сервиса.
 
 Run from any directory using the dependency command in login-observability.md.
 Prometheus rule evaluation is a separate promtool test, not simulated here.
@@ -18,6 +18,13 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parent
+FORMATS = FormatChecker()
+
+
+@FORMATS.checks("event-time")
+def event_time(value):
+    # Как time.Parse в сервисе: разделитель миллисекунд — точка или запятая.
+    return not isinstance(value, str) or FORMATS.conforms(value.replace(",", "."), "date-time")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -57,7 +64,7 @@ def main():
         return Draft202012Validator(
             {"$ref": uri + pointer},
             registry=registry,
-            format_checker=FormatChecker(),
+            format_checker=FORMATS,
         )
 
     event_validator = validator("#/components/schemas/LoginEvent")
@@ -78,6 +85,9 @@ def main():
     uppercase = deepcopy(accepted[0])
     uppercase["event_id"] = "019A0000-AAAA-7AAA-8AAA-AAAAAAAAAAAA"
     event_validator.validate(uppercase)
+    comma_time = deepcopy(accepted[0])
+    comma_time["occurred_at"] = comma_time["occurred_at"].replace(".", ",")
+    event_validator.validate(comma_time)
 
     rejected = 0
 
@@ -88,7 +98,7 @@ def main():
         rejected += 1
 
     for event in accepted:
-        for field in ("version", "event_id", "scenario_id", "occurred_at", "source", "type"):
+        for field in ("event_id", "scenario_id", "occurred_at", "source", "type"):
             missing = deepcopy(event)
             del missing[field]
             must_reject(missing)
@@ -98,17 +108,19 @@ def main():
         for field in ("user_id", "state", "reason", "unexpected"):
             extra = deepcopy(event)
             extra[field] = "not part of the contract"
-            must_reject(extra)
+            event_validator.validate(extra)
         if event["type"] != "login_mode_determined":
             extra_mode = deepcopy(event)
             extra_mode["mode"] = "credentials"
             must_reject(extra_mode)
+            for mode in (None, ""):
+                empty_mode = deepcopy(event)
+                empty_mode["mode"] = mode
+                event_validator.validate(empty_mode)
 
     base = accepted[0]
     for field in ("event_id", "scenario_id"):
         for value in (
-            "019a0000-0000-4000-8000-000000000001",
-            "019a0000-0000-7000-0000-000000000001",
             "not-a-uuid",
             "",
             1,
@@ -118,7 +130,6 @@ def main():
             must_reject(invalid)
 
     for field, values in {
-        "version": (0, 2, "1", True),
         "source": ("auth", "enterprise", "unknown"),
         "type": ("login_expired", "unknown", ""),
         "occurred_at": (
@@ -133,6 +144,19 @@ def main():
             invalid = deepcopy(base)
             invalid[field] = value
             must_reject(invalid)
+
+    # JSON Schema задаёт тип и длину ID; полный синтаксис проверяют Go HTTP-тесты.
+    for field in ("event_id", "scenario_id"):
+        for value in (
+            "019a0000-0000-4000-8000-000000000001",
+            "019a0000-0000-7000-0000-000000000001",
+            "019a0000000070008000000000000001",
+            "{019a0000-0000-7000-8000-000000000001}",
+            "urn:uuid:019a0000-0000-7000-8000-000000000001",
+        ):
+            event = deepcopy(base)
+            event[field] = value
+            event_validator.validate(event)
 
     mode_event = deepcopy(examples["credentials"]["value"])
     for value in ("unknown", "", None):
