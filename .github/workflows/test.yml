@@ -30,5 +30,11 @@ jobs:
                   go mod download
                   go mod verify
 
+            - name: Установка golangci-lint
+              uses: golangci/golangci-lint-action@v9
+              with:
+                  version: v2.15.0
+                  install-only: true
+
             - name: Запуск тестов
               run: make test
