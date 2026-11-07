@@ -1,14 +1,21 @@
 package memory
 
-import "github.com/vendelev/sre-metrics/user-login/internal/domain"
+import (
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
+)
 
-func validMode(mode domain.OAuthMode) bool {
-	return mode == domain.LoginModeCredentials || mode == domain.LoginModeExistingSession
+func validMode(mode dEvent.OAuthMode) bool {
+	return mode == dEvent.LoginModeCredentials || mode == dEvent.LoginModeExistingSession
 }
 
-func validMeasurements(measurements domain.Measurements) bool {
+func validMeasurements(measurements dScenario.Measurements) bool {
 	switch measurements.Completion {
-	case "", domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected, domain.OutcomeUnknown:
+	case "",
+		dScenario.OutcomeSuccess,
+		dScenario.OutcomeTechnicalError,
+		dScenario.OutcomeRejected,
+		dScenario.OutcomeUnknown:
 	default:
 		return false
 	}

@@ -30,6 +30,7 @@ linters:
           list-mode: strict
           allow:
             - "$gostd"
+            - "github.com/google/uuid$"
             - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
             - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
           deny:

@@ -16,7 +16,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
@@ -56,7 +59,7 @@ func newFixture(t *testing.T, limits memory.Limits) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.handler, err = httpapi.NewHandler(func(event domain.Event) (application.ProcessResult, error) {
+	f.handler, err = httpapi.NewHandler(func(event event.Request) (application.ProcessResult, error) {
 		f.calls++
 		return f.observer.Process(event)
 	}, slog.New(slog.NewJSONHandler(&f.logs, nil)), httpapi.DefaultSettings())
@@ -75,8 +78,8 @@ func TestHandlerErrorLogging(t *testing.T) {
 		code   string
 	}{
 		{name: "внутренняя ошибка", err: errors.New("сбой хранилища"), status: 500, code: "internal_error"},
-		{name: "конфликт", err: domain.ErrConflict, status: 409, code: "event_conflict"},
-		{name: "лимит", err: domain.ErrCapacityExceeded, status: 503, code: "capacity_exceeded"},
+		{name: "конфликт", err: dError.ErrConflict, status: 409, code: "event_conflict"},
+		{name: "лимит", err: dError.ErrCapacityExceeded, status: 503, code: "capacity_exceeded"},
 		{name: "успех", status: 204},
 	}
 	for _, tt := range tests {
@@ -85,7 +88,7 @@ func TestHandlerErrorLogging(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil)).With("service", "user-login", "component", "http")
 			handler, err := httpapi.NewHandler(
-				func(domain.Event) (application.ProcessResult, error) {
+				func(event.Request) (application.ProcessResult, error) {
 					return application.ProcessResult{}, tt.err
 				},
 				logger,
@@ -174,11 +177,11 @@ func post(t *testing.T, f *fixture, body string, status int, code string) {
 }
 
 func TestNewHandler(t *testing.T) {
-	process := func(domain.Event) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
+	process := func(event.Request) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, tc := range []struct {
 		name     string
-		process  func(domain.Event) (application.ProcessResult, error)
+		process  func(event.Request) (application.ProcessResult, error)
 		logger   *slog.Logger
 		settings httpapi.Settings
 	}{
@@ -213,13 +216,13 @@ func TestHandlerAcceptsEventTypes(t *testing.T) {
 		t.Run(tc.kind+"/"+tc.source+"/"+tc.mode, func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
 			post(t, f, eventBody(eventID, tc.kind, tc.source, wireTime, tc.mode), 204, "")
-			if err := f.store.Within(func(s domain.State) error {
+			if err := f.store.Within(func(s contract.State) error {
 				e, ok := s.FindEvent(eventID)
-				if !ok || e.Type != domain.EventType(tc.kind) || e.Source != domain.Source(tc.source) ||
+				if !ok || e.Type != event.Type(tc.kind) || e.Source != event.Source(tc.source) ||
 					e.ScenarioID != scenarioID || !e.OccurredAt.Equal(f.clock.now) {
 					t.Fatalf("событие не сохранено или преобразовано неверно: %+v", e)
 				}
-				if (e.Mode == nil) != (tc.mode == "") || (e.Mode != nil && string(*e.Mode) != tc.mode) {
+				if (e.AuthMode == nil) != (tc.mode == "") || (e.AuthMode != nil && string(*e.AuthMode) != tc.mode) {
 					t.Fatal("неверное преобразование mode")
 				}
 				return nil
@@ -268,24 +271,27 @@ func TestHandlerSuccessAndEquivalentDuplicates(t *testing.T) {
 		}
 	}
 	a := oteltest.Read(t, f.recorder)
-	h := a.Durations[domain.LoginModeCredentials]
-	if a.Completed[domain.OutcomeSuccess] != 1 || h.Count != 1 || h.SumSeconds != 20 {
+	h := a.Durations[event.LoginModeCredentials]
+	if a.Completed[scenario.OutcomeSuccess] != 1 || h.Count != 1 || h.SumSeconds != 20 {
 		t.Fatalf("неверные агрегаты успешного пути: %+v", a)
 	}
 }
 
 // capture читает состояние без обслуживания, включая сохранённые ID и агрегаты.
 type stateSnapshot struct {
-	scenarios  map[uuid.UUID]*domain.Scenario
-	events     map[uuid.UUID]domain.Event
+	scenarios  map[uuid.UUID]*scenario.Scenario
+	events     map[uuid.UUID]event.Request
 	aggregates oteltest.Values
 }
 
 func capture(t *testing.T, f *fixture) stateSnapshot {
 	t.Helper()
-	snapshot := stateSnapshot{scenarios: make(map[uuid.UUID]*domain.Scenario), events: make(map[uuid.UUID]domain.Event)}
-	if err := f.store.Within(func(s domain.State) error {
-		if err := s.VisitScenarios(func(scenario *domain.Scenario) error {
+	snapshot := stateSnapshot{
+		scenarios: make(map[uuid.UUID]*scenario.Scenario),
+		events:    make(map[uuid.UUID]event.Request),
+	}
+	if err := f.store.Within(func(s contract.State) error {
+		if err := s.VisitScenarios(func(scenario *scenario.Scenario) error {
 			snapshot.scenarios[scenario.ID()] = scenario
 			return nil
 		}); err != nil {
@@ -307,12 +313,12 @@ func capture(t *testing.T, f *fixture) stateSnapshot {
 
 func TestCaptureEventIndex(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
-	event := domain.Event{
+	event := event.Request{
 		EventID:    eventID,
 		ScenarioID: scenarioID,
 		OccurredAt: f.clock.now,
-		Source:     domain.SourceMIS,
-		Type:       domain.EventTypeLoginStarted,
+		Source:     event.SourceMIS,
+		Type:       event.LoginStarted,
 	}
 	if _, err := f.observer.Process(event); err != nil {
 		t.Fatal(err)
@@ -321,7 +327,7 @@ func TestCaptureEventIndex(t *testing.T) {
 	if len(before.events) != 1 || before.events[eventID].EventID != eventID {
 		t.Fatal("снимок не содержит принятый ID события")
 	}
-	if err := f.store.Within(func(state domain.State) error {
+	if err := f.store.Within(func(state contract.State) error {
 		return state.DeleteScenario(scenarioID)
 	}); err != nil {
 		t.Fatal(err)
@@ -475,11 +481,11 @@ func TestHandlerProcessErrors(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"схема", domain.ErrInvalidEvent, 400, "invalid_event"},
-		{"конфликт", domain.ErrConflict, 409, "event_conflict"},
-		{"срок", domain.ErrScenarioExpired, 410, "scenario_expired"},
-		{"вместимость", domain.ErrCapacityExceeded, 503, "capacity_exceeded"},
-		{"внутренняя", domain.ErrInternal, 500, "internal_error"},
+		{"схема", dError.ErrInvalidEvent, 400, "invalid_event"},
+		{"конфликт", dError.ErrConflict, 409, "event_conflict"},
+		{"срок", scenario.ErrScenarioExpired, 410, "scenario_expired"},
+		{"вместимость", dError.ErrCapacityExceeded, 503, "capacity_exceeded"},
+		{"внутренняя", dError.ErrInternal, 500, "internal_error"},
 		{"неожиданная", errors.New("секретный внутренний текст " + eventID.String()), 500, "internal_error"},
 	} {
 		for _, wrapped := range []bool{false, true} {
@@ -488,7 +494,7 @@ func TestHandlerProcessErrors(t *testing.T) {
 				if wrapped {
 					err = fmt.Errorf("контекст с секретом: %w", err)
 				}
-				h, createErr := httpapi.NewHandler(func(domain.Event) (application.ProcessResult, error) {
+				h, createErr := httpapi.NewHandler(func(event.Request) (application.ProcessResult, error) {
 					return application.ProcessResult{}, err
 				}, slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.DefaultSettings())
 				if createErr != nil {
@@ -502,7 +508,7 @@ func TestHandlerProcessErrors(t *testing.T) {
 
 type failingStore struct{}
 
-func (failingStore) Within(func(domain.State) error) error {
+func (failingStore) Within(func(contract.State) error) error {
 	return errors.New("внутренний сбой " + scenarioID.String())
 }
 

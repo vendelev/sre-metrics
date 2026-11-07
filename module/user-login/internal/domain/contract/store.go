@@ -1,7 +1,9 @@
-package domain
+package contract
 
 import (
 	"github.com/google/uuid"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
 // Store сериализует доступ к сценариям, событиям и регистрации новых измерений.
@@ -18,14 +20,14 @@ type Store interface {
 // Сущности и события копируются в обе стороны; карты и изменяемые ссылки хранилища не выдаются.
 type State interface {
 	// FindScenario возвращает независимую копию сценария и признак его наличия.
-	FindScenario(id uuid.UUID) (*Scenario, bool)
+	FindScenario(id uuid.UUID) (*dScenario.Scenario, bool)
 
 	// FindEvent возвращает независимую копию принятого события из глобального индекса.
-	FindEvent(id uuid.UUID) (Event, bool)
+	FindEvent(id uuid.UUID) (dEvent.Request, bool)
 
 	// VisitScenarios допускает обновление и удаление существующих записей из visit,
 	// но не создание новых. Каждый вызов visit получает независимую копию.
-	VisitScenarios(visit func(*Scenario) error) error
+	VisitScenarios(visit func(*dScenario.Scenario) error) error
 
 	// CheckCapacity проверяет место для нового ID и, при необходимости, нового сценария.
 	CheckCapacity(scenarioID uuid.UUID) error
@@ -37,7 +39,7 @@ type State interface {
 	// event == nil допустим только для самостоятельного изменения существующей записи.
 	// Переданные измерения должны быть результатом TakeMeasurements переданного scenario.
 	// ID должны быть нормализованы application; приём нового ID требует CheckCapacity.
-	Commit(scenario *Scenario, event *Event, measurements Measurements) error
+	Commit(scenario *dScenario.Scenario, event *dEvent.Request, measurements dScenario.Measurements) error
 
 	// DeleteScenario удаляет сценарий и все его события, не уменьшая метрики.
 	DeleteScenario(id uuid.UUID) error

@@ -6,7 +6,10 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
 // Limits задаёт положительные пределы памяти без вытеснения действующих записей.
@@ -26,21 +29,21 @@ type Store struct {
 	mu        sync.Mutex
 	limits    Limits
 	scenarios map[uuid.UUID]*record
-	events    map[uuid.UUID]domain.Event
-	recorder  domain.MeasurementRecorder
+	events    map[uuid.UUID]dEvent.Request
+	recorder  dContract.MeasurementRecorder
 }
 
 type record struct {
-	scenario *domain.Scenario
+	scenario *dScenario.Scenario
 	eventIDs map[uuid.UUID]struct{}
 }
 
-var _ domain.Store = (*Store)(nil)
+var _ dContract.Store = (*Store)(nil)
 
 // NewStore создаёт пустое хранилище с готовым локальным регистратором измерений.
 // Нулевые и отрицательные ограничения отклоняются, а не заменяются умолчаниями.
 // Зависимость должна быть ненулевой, в том числе не содержать типизированный nil.
-func NewStore(limits Limits, recorder domain.MeasurementRecorder) (*Store, error) {
+func NewStore(limits Limits, recorder dContract.MeasurementRecorder) (*Store, error) {
 	if limits.MaxScenarios <= 0 || limits.MaxEventsPerScenario <= 0 {
 		return nil, errors.New("лимиты сценариев и событий должны быть положительными")
 	}
@@ -49,15 +52,15 @@ func NewStore(limits Limits, recorder domain.MeasurementRecorder) (*Store, error
 	}
 	return &Store{
 		limits: limits, scenarios: make(map[uuid.UUID]*record),
-		events: make(map[uuid.UUID]domain.Event), recorder: recorder,
+		events: make(map[uuid.UUID]dEvent.Request), recorder: recorder,
 	}, nil
 }
 
 // Within предоставляет синхронный доступ без отката ранее выполненных фиксаций.
 // Обращения к State вне callback и вложенные операции с этим Store запрещены.
-func (s *Store) Within(operation func(domain.State) error) error {
+func (s *Store) Within(operation func(dContract.State) error) error {
 	if operation == nil {
-		return fmt.Errorf("отсутствует операция: %w", domain.ErrInternal)
+		return fmt.Errorf("отсутствует операция: %w", dError.ErrInternal)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,7 +75,7 @@ type state struct {
 	store *Store
 }
 
-func (s *state) FindScenario(id uuid.UUID) (*domain.Scenario, bool) {
+func (s *state) FindScenario(id uuid.UUID) (*dScenario.Scenario, bool) {
 	if s.store == nil {
 		return nil, false
 	}
@@ -83,17 +86,17 @@ func (s *state) FindScenario(id uuid.UUID) (*domain.Scenario, bool) {
 	return record.scenario.Clone(), true
 }
 
-func (s *state) FindEvent(id uuid.UUID) (domain.Event, bool) {
+func (s *state) FindEvent(id uuid.UUID) (dEvent.Request, bool) {
 	if s.store == nil {
-		return domain.Event{}, false
+		return dEvent.Request{}, false
 	}
-	event, ok := s.store.events[id]
-	return event.Clone(), ok
+	storeEvent, ok := s.store.events[id]
+	return storeEvent.Clone(), ok
 }
 
-func (s *state) VisitScenarios(visit func(*domain.Scenario) error) error {
+func (s *state) VisitScenarios(visit func(*dScenario.Scenario) error) error {
 	if s.store == nil || visit == nil {
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
 	// Удаление текущей записи и обновление существующей допустимы при обходе map.
 	// Добавление записей из visit не допускается контрактом обхода.
@@ -107,40 +110,44 @@ func (s *state) VisitScenarios(visit func(*domain.Scenario) error) error {
 
 func (s *state) CheckCapacity(scenarioID uuid.UUID) error {
 	if s.store == nil {
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
 	if record, ok := s.store.scenarios[scenarioID]; ok {
 		if len(record.eventIDs) >= s.store.limits.MaxEventsPerScenario {
-			return domain.ErrCapacityExceeded
+			return dError.ErrCapacityExceeded
 		}
 		return nil
 	}
 	if len(s.store.scenarios) >= s.store.limits.MaxScenarios {
-		return domain.ErrCapacityExceeded
+		return dError.ErrCapacityExceeded
 	}
 	return nil
 }
 
-func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measurements domain.Measurements) error {
-	if s.store == nil || scenario == nil {
-		return domain.ErrInternal
+func (s *state) Commit(
+	loginScenario *dScenario.Scenario,
+	event *dEvent.Request,
+	measurements dScenario.Measurements,
+) error {
+	if s.store == nil || loginScenario == nil {
+		return dError.ErrInternal
 	}
 	if !validMeasurements(measurements) {
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
-	entry, exists := s.store.scenarios[scenario.ID()]
+	entry, exists := s.store.scenarios[loginScenario.ID()]
 	if event == nil {
 		if !exists {
-			return domain.ErrInternal
+			return dError.ErrInternal
 		}
 	} else {
-		if event.ScenarioID != scenario.ID() {
-			return domain.ErrInternal
+		if event.ScenarioID != loginScenario.ID() {
+			return dError.ErrInternal
 		}
 		if _, ok := s.store.events[event.EventID]; ok {
-			return domain.ErrConflict
+			return dError.ErrConflict
 		}
-		if err := s.CheckCapacity(scenario.ID()); err != nil {
+		if err := s.CheckCapacity(loginScenario.ID()); err != nil {
 			return err
 		}
 	}
@@ -148,9 +155,9 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 	// только локальный SDK. Между инструментами нет транзакции или механизма отката.
 	if !exists {
 		entry = &record{eventIDs: make(map[uuid.UUID]struct{})}
-		s.store.scenarios[scenario.ID()] = entry
+		s.store.scenarios[loginScenario.ID()] = entry
 	}
-	entry.scenario = scenario.Clone()
+	entry.scenario = loginScenario.Clone()
 	if event != nil {
 		s.store.events[event.EventID] = event.Clone()
 		entry.eventIDs[event.EventID] = struct{}{}
@@ -161,7 +168,7 @@ func (s *state) Commit(scenario *domain.Scenario, event *domain.Event, measureme
 
 func (s *state) DeleteScenario(id uuid.UUID) error {
 	if s.store == nil {
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
 	if record, ok := s.store.scenarios[id]; ok {
 		for eventID := range record.eventIDs {

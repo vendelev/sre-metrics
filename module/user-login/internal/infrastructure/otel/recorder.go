@@ -7,13 +7,14 @@ import (
 	"os"
 
 	"github.com/google/uuid"
+	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/resource"
-
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 )
 
 const (
@@ -38,7 +39,7 @@ type Recorder struct {
 	duration        metric.Float64Histogram
 }
 
-var _ domain.MeasurementRecorder = (*Recorder)(nil)
+var _ dContract.MeasurementRecorder = (*Recorder)(nil)
 
 // New создаёт инструменты, зарегистрированный reader и шесть нулевых рядов Counter.
 // UUID v7 создаётся один раз. Фоновых задач и сети у локального reader нет.
@@ -120,12 +121,18 @@ func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recor
 		return nil, errors.Join(err, provider.Shutdown(ctx))
 	}
 	r.resource = res
-	for _, outcome := range []domain.Outcome{
-		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected, domain.OutcomeUnknown,
+	for _, outcome := range []dScenario.Outcome{
+		dScenario.OutcomeSuccess,
+		dScenario.OutcomeTechnicalError,
+		dScenario.OutcomeRejected,
+		dScenario.OutcomeUnknown,
 	} {
 		r.completed.Add(context.Background(), 0, metric.WithAttributes(attribute.String("outcome", string(outcome))))
 	}
-	for _, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for _, mode := range []dEvent.OAuthMode{
+		dEvent.LoginModeCredentials,
+		dEvent.LoginModeExistingSession,
+	} {
 		r.technicalErrors.Add(context.Background(), 0, metric.WithAttributes(attribute.String("mode", string(mode))))
 	}
 	return r, nil
@@ -152,7 +159,7 @@ func newInstruments(provider *sdkmetric.MeterProvider) (*Recorder, error) {
 // Record синхронно регистрирует только новые, проверенные хранилищем измерения.
 // Контекст намеренно пустой: локальная регистрация не зависит от отмены запроса,
 // не переносит данные запроса и не выполняет экспорт. Exemplars отключены.
-func (r *Recorder) Record(measurements domain.Measurements) {
+func (r *Recorder) Record(measurements dScenario.Measurements) {
 	ctx := context.Background()
 	if measurements.Completion != "" {
 		r.completed.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", string(measurements.Completion))))

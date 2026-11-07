@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	event2 "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	scenario2 "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 )
 
@@ -62,7 +65,7 @@ func await(t *testing.T, signal <-chan struct{}) {
 	}
 }
 
-func processOperation(f *fixture, e domain.Event) func() error {
+func processOperation(f *fixture, e event2.Request) func() error {
 	return func() error {
 		_, err := f.observer.Process(e)
 		return err
@@ -86,16 +89,16 @@ func assertErrors(t *testing.T, got []error, counts map[error]int) {
 
 func TestProcessConcurrentDuplicates(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
-	process(t, f, event(1, 100, domain.EventTypeLoginStarted, f.base), nil)
-	process(t, f, event(2, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
-	e := event(3, 100, domain.EventTypeLoginSucceeded, f.base)
+	process(t, f, event(1, 100, event2.LoginStarted, f.base), nil)
+	process(t, f, event(2, 100, event2.LoginModeDetermined, f.base), nil)
+	e := event(3, 100, event2.LoginSucceeded, f.base)
 	operations := make([]func() error, 12)
 	for i := range operations {
 		operations[i] = processOperation(f, e)
 	}
 	assertErrors(t, together(t, operations...), map[error]int{nil: 12})
 	a := snapshot(t, f)
-	if a.Completed[domain.OutcomeSuccess] != 1 || a.Durations[domain.LoginModeCredentials].Count != 1 {
+	if a.Completed[scenario2.OutcomeSuccess] != 1 || a.Durations[event2.LoginModeCredentials].Count != 1 {
 		t.Fatalf("повторы повторно изменили агрегаты: %+v", a)
 	}
 }
@@ -103,11 +106,11 @@ func TestProcessConcurrentDuplicates(t *testing.T) {
 func TestProcessConcurrentOutcomes(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	got := together(t,
-		processOperation(f, event(1, 100, domain.EventTypeLoginSucceeded, f.base)),
-		processOperation(f, event(2, 100, domain.EventTypeLoginFailed, f.base)),
-		processOperation(f, event(3, 100, domain.EventTypeLoginRejected, f.base)),
+		processOperation(f, event(1, 100, event2.LoginSucceeded, f.base)),
+		processOperation(f, event(2, 100, event2.LoginFailed, f.base)),
+		processOperation(f, event(3, 100, event2.LoginRejected, f.base)),
 	)
-	assertErrors(t, got, map[error]int{nil: 1, domain.ErrConflict: 2})
+	assertErrors(t, got, map[error]int{nil: 1, dError.ErrConflict: 2})
 	a := snapshot(t, f)
 	winner := scenario(t, f, 100).Outcome()
 	var completions int64
@@ -132,26 +135,26 @@ func TestProcessConcurrentMaintenance(t *testing.T) {
 				limit = 2
 			}
 			f := newFixture(t, memory.Limits{MaxScenarios: 1, MaxEventsPerScenario: limit})
-			process(t, f, event(1, 100, domain.EventTypeLoginStarted, f.base), nil)
-			process(t, f, event(2, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
+			process(t, f, event(1, 100, event2.LoginStarted, f.base), nil)
+			process(t, f, event(2, 100, event2.LoginModeDetermined, f.base), nil)
 			f.clock.Set(f.base.Add(15 * time.Minute))
-			e := event(3, 100, domain.EventTypeLoginSucceeded, f.clock.Now())
-			want := domain.ErrScenarioExpired
+			e := event(3, 100, event2.LoginSucceeded, f.clock.Now())
+			want := scenario2.ErrScenarioExpired
 			if operation == "закрытие при полном лимите" {
-				e = event(3, 100, domain.EventTypeLoginModeDetermined, f.clock.Now())
-				want = domain.ErrCapacityExceeded
+				e = event(3, 100, event2.LoginModeDetermined, f.clock.Now())
+				want = dError.ErrCapacityExceeded
 			}
 			if operation == "очистка" {
 				maintain(t, f)
 				f.clock.Set(f.base.Add(30 * time.Minute))
-				e = event(1, 101, domain.EventTypeLoginSucceeded, f.clock.Now())
+				e = event(1, 101, event2.LoginSucceeded, f.clock.Now())
 				want = nil
 			}
 			got := together(t, processOperation(f, e), f.observer.Maintain)
 			if !errors.Is(got[0], want) || got[1] != nil {
 				t.Fatalf("обработка против обслуживания: %v", got)
 			}
-			if snapshot(t, f).Completed[domain.OutcomeUnknown] != 1 {
+			if snapshot(t, f).Completed[scenario2.OutcomeUnknown] != 1 {
 				t.Fatal("гонка потеряла или повторила unknown")
 			}
 			if operation == "очистка" {
@@ -172,19 +175,19 @@ func TestProcessConcurrentCapacity(t *testing.T) {
 			firstScenario, secondScenario := 100, 101
 			if scope == "события" {
 				secondScenario = firstScenario
-				process(t, f, event(3, 100, domain.EventTypeLoginFailed, f.base), nil)
+				process(t, f, event(3, 100, event2.LoginFailed, f.base), nil)
 			}
 			got := together(t,
-				processOperation(f, event(1, firstScenario, domain.EventTypeLoginFailed, f.base)),
-				processOperation(f, event(2, secondScenario, domain.EventTypeLoginFailed, f.base)),
+				processOperation(f, event(1, firstScenario, event2.LoginFailed, f.base)),
+				processOperation(f, event(2, secondScenario, event2.LoginFailed, f.base)),
 			)
-			assertErrors(t, got, map[error]int{nil: 1, domain.ErrCapacityExceeded: 1})
+			assertErrors(t, got, map[error]int{nil: 1, dError.ErrCapacityExceeded: 1})
 			for i, err := range got {
 				if hasEvent(t, f, i+1) != (err == nil) {
 					t.Fatal("индекс не соответствует вместимости")
 				}
 			}
-			if snapshot(t, f).Completed[domain.OutcomeTechnicalError] != 1 {
+			if snapshot(t, f).Completed[scenario2.OutcomeTechnicalError] != 1 {
 				t.Fatal("приём последнего места повторно увеличил счётчик завершений")
 			}
 		})
@@ -193,10 +196,10 @@ func TestProcessConcurrentCapacity(t *testing.T) {
 
 func TestSDKCollectConcurrentCommit(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
-	process(t, f, event(1, 100, domain.EventTypeLoginStarted, f.base), nil)
-	process(t, f, event(2, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
+	process(t, f, event(1, 100, event2.LoginStarted, f.base), nil)
+	process(t, f, event(2, 100, event2.LoginModeDetermined, f.base), nil)
 	got := together(t,
-		processOperation(f, event(3, 100, domain.EventTypeLoginSucceeded, f.base)),
+		processOperation(f, event(3, 100, event2.LoginSucceeded, f.base)),
 		func() error {
 			var data metricdata.ResourceMetrics
 			// Не требуем согласованного снимка разных инструментов во время Commit.
@@ -205,17 +208,17 @@ func TestSDKCollectConcurrentCommit(t *testing.T) {
 	)
 	assertErrors(t, got, map[error]int{nil: 2})
 	a := snapshot(t, f)
-	if a.Completed[domain.OutcomeSuccess] != 1 || a.Durations[domain.LoginModeCredentials].Count != 1 {
+	if a.Completed[scenario2.OutcomeSuccess] != 1 || a.Durations[event2.LoginModeCredentials].Count != 1 {
 		t.Fatalf("сбор после завершения потерял измерения: %+v", a)
 	}
 }
 
 type announcingStore struct {
-	domain.Store
+	contract.Store
 	entered chan struct{}
 }
 
-func (s announcingStore) Within(operation func(domain.State) error) error {
+func (s announcingStore) Within(operation func(contract.State) error) error {
 	close(s.entered)
 	return s.Store.Within(operation)
 }
@@ -232,13 +235,13 @@ func (c *countedClock) Now() time.Time {
 
 func TestOperationTimeInsideLock(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
-	process(t, f, event(1, 100, domain.EventTypeLoginStarted, f.base), nil)
+	process(t, f, event(1, 100, event2.LoginStarted, f.base), nil)
 	locked := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
 	lockResult := make(chan error, 1)
 	go func() {
-		lockResult <- f.store.Within(func(domain.State) error {
+		lockResult <- f.store.Within(func(contract.State) error {
 			close(locked)
 			<-release
 			return nil
@@ -253,7 +256,7 @@ func TestOperationTimeInsideLock(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := observer.Process(event(2, 100, domain.EventTypeLoginSucceeded, f.base))
+		_, err := observer.Process(event(2, 100, event2.LoginSucceeded, f.base))
 		result <- err
 	}()
 	await(t, entered)
@@ -265,7 +268,7 @@ func TestOperationTimeInsideLock(t *testing.T) {
 	for _, ch := range []<-chan error{result, lockResult} {
 		select {
 		case got := <-ch:
-			if ch == result && !errors.Is(got, domain.ErrScenarioExpired) {
+			if ch == result && !errors.Is(got, scenario2.ErrScenarioExpired) {
 				t.Fatalf("использовано время до входа в блокировку: %v", got)
 			}
 			if ch == lockResult && got != nil {
@@ -275,7 +278,7 @@ func TestOperationTimeInsideLock(t *testing.T) {
 			t.Fatal("операция не завершилась после освобождения блокировки")
 		}
 	}
-	if clock.calls.Load() != 1 || snapshot(t, f).Completed[domain.OutcomeUnknown] != 1 {
+	if clock.calls.Load() != 1 || snapshot(t, f).Completed[scenario2.OutcomeUnknown] != 1 {
 		t.Fatal("операция должна использовать одно время и увеличить счётчик unknown один раз")
 	}
 	observer, err = application.NewLoginObserver(f.store, clock)

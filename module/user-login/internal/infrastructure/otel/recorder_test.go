@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
@@ -47,19 +48,19 @@ func newStack(t *testing.T) *stack {
 	return &stack{recorder: r, observer: observer, now: now}
 }
 
-func (s *stack) event(t *testing.T, scenario string, kind domain.EventType, mode domain.OAuthMode, at time.Time) {
+func (s *stack) event(t *testing.T, scenario string, kind event.Type, mode event.OAuthMode, at time.Time) {
 	t.Helper()
 	s.next++
 	id := fmt.Sprintf("019aabcd-0000-7000-8000-%012x", s.next)
-	e := domain.Event{
+	e := event.Request{
 		EventID:    uuid.MustParse(id),
 		ScenarioID: uuid.MustParse(scenario),
 		Type:       kind,
-		Source:     domain.SourceMIS,
+		Source:     event.SourceMIS,
 		OccurredAt: at,
 	}
-	if kind == domain.EventTypeLoginModeDetermined {
-		e.Source, e.Mode = domain.SourceAuth, &mode
+	if kind == event.LoginModeDetermined {
+		e.Source, e.AuthMode = event.SourceAuth, &mode
 	}
 	if _, err := s.observer.Process(e); err != nil {
 		t.Fatal(err)
@@ -259,24 +260,24 @@ func TestRecorderSDKContract(t *testing.T) {
 		60 * time.Second,
 		61 * time.Second,
 	}
-	for index, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for index, mode := range []event.OAuthMode{event.LoginModeCredentials, event.LoginModeExistingSession} {
 		for i, duration := range durations {
 			scenario := fmt.Sprintf("019aabcd-0000-7000-9000-%012x", 100+index*100+i)
-			s.event(t, scenario, domain.EventTypeLoginSucceeded, "", s.now)
-			s.event(t, scenario, domain.EventTypeLoginStarted, "", s.now.Add(-duration))
-			s.event(t, scenario, domain.EventTypeLoginModeDetermined, mode, s.now)
+			s.event(t, scenario, event.LoginSucceeded, "", s.now)
+			s.event(t, scenario, event.LoginStarted, "", s.now.Add(-duration))
+			s.event(t, scenario, event.LoginModeDetermined, mode, s.now)
 		}
 		scenario := fmt.Sprintf("019aabcd-0000-7000-9000-%012x", 1000+index)
-		s.event(t, scenario, domain.EventTypeLoginFailed, "", s.now)
-		s.event(t, scenario, domain.EventTypeLoginModeDetermined, mode, s.now)
+		s.event(t, scenario, event.LoginFailed, "", s.now)
+		s.event(t, scenario, event.LoginModeDetermined, mode, s.now)
 	}
 	full := sdkCollect(t, s)
 	assertStableStarts(t, baseline, full)
 	values := oteltest.Read(t, s.recorder)
-	if values.Completed[domain.OutcomeSuccess] != 14 || values.Completed[domain.OutcomeTechnicalError] != 2 {
+	if values.Completed[scenario.OutcomeSuccess] != 14 || values.Completed[scenario.OutcomeTechnicalError] != 2 {
 		t.Fatalf("Counter: %+v", values)
 	}
-	for _, mode := range []domain.OAuthMode{domain.LoginModeCredentials, domain.LoginModeExistingSession} {
+	for _, mode := range []event.OAuthMode{event.LoginModeCredentials, event.LoginModeExistingSession} {
 		h := values.Durations[mode]
 		if values.TechnicalErrors[mode] != 1 || h.Count != 7 || h.BucketCounts != [4]uint64{2, 2, 2, 1} {
 			t.Fatalf("измерения %s: %+v", mode, values)
@@ -292,11 +293,11 @@ func TestRecorderSDKContract(t *testing.T) {
 	if !reflect.DeepEqual(values, oteltest.Read(t, s.recorder)) {
 		t.Fatal("сбор повторно увеличил значения")
 	}
-	s.event(t, "019aabcd-0000-7000-9000-000000009000", domain.EventTypeLoginRejected, "", s.now)
+	s.event(t, "019aabcd-0000-7000-9000-000000009000", event.LoginRejected, "", s.now)
 	updated := sdkCollect(t, s)
 	assertStableStarts(t, full, updated)
 	next := oteltest.Read(t, s.recorder)
-	if next.Completed[domain.OutcomeRejected] != 1 || next.Completed[domain.OutcomeSuccess] != 14 {
+	if next.Completed[scenario.OutcomeRejected] != 1 || next.Completed[scenario.OutcomeSuccess] != 14 {
 		t.Fatal("новое событие не увеличило нужный ряд")
 	}
 	other := newStack(t)
@@ -313,18 +314,18 @@ func TestRecorderSDKContract(t *testing.T) {
 
 func TestRecorderLateHistogram(t *testing.T) {
 	s := newStack(t)
-	scenario := "019aabcd-0000-7000-9000-000000009001"
-	s.event(t, scenario, domain.EventTypeLoginSucceeded, "", s.now)
+	scenarioID := "019aabcd-0000-7000-9000-000000009001"
+	s.event(t, scenarioID, event.LoginSucceeded, "", s.now)
 	before := sdkCollect(t, s)
 	if len(oteltest.Read(t, s.recorder).Durations) != 0 {
 		t.Fatal("успех без связанных фактов создал Histogram")
 	}
-	s.event(t, scenario, domain.EventTypeLoginStarted, "", s.now.Add(-time.Second))
-	s.event(t, scenario, domain.EventTypeLoginModeDetermined, domain.LoginModeCredentials, s.now)
+	s.event(t, scenarioID, event.LoginStarted, "", s.now.Add(-time.Second))
+	s.event(t, scenarioID, event.LoginModeDetermined, event.LoginModeCredentials, s.now)
 	after := sdkCollect(t, s)
 	assertStableStarts(t, before, after)
 	values := oteltest.Read(t, s.recorder)
-	if values.Completed[domain.OutcomeSuccess] != 1 || values.Durations[domain.LoginModeCredentials].Count != 1 {
+	if values.Completed[scenario.OutcomeSuccess] != 1 || values.Durations[event.LoginModeCredentials].Count != 1 {
 		t.Fatal("поздний факт повторил успех или потерял наблюдение")
 	}
 	assertStableStarts(t, after, sdkCollect(t, s))

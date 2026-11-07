@@ -1,4 +1,4 @@
-package domain_test
+package scenario_test
 
 import (
 	"errors"
@@ -6,29 +6,31 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
 // BR-04, AC-17: сравнивается момент времени, первое начало неизменяемо.
 func TestScenarioStartConfirmationAndConflict(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
-	scenario := domain.NewScenario(uuid.New())
-	if err := scenario.Start(startedAt, startedAt); err != nil {
+	s := scenario.New(uuid.New())
+	if err := s.Start(startedAt, startedAt); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
 
 	sameInstant := startedAt.In(time.FixedZone("UTC+3", 3*60*60))
-	if err := scenario.Start(sameInstant, startedAt); err != nil {
+	if err := s.Start(sameInstant, startedAt); err != nil {
 		t.Fatalf("подтверждение начала: %v", err)
 	}
-	if got, ok := scenario.StartedAt(); !ok || !got.Equal(startedAt) || got.Location() != startedAt.Location() {
+	if got, ok := s.StartedAt(); !ok || !got.Equal(startedAt) || got.Location() != startedAt.Location() {
 		t.Errorf("подтверждение заменило первоначальное начало: получено (%v, %t)", got, ok)
 	}
 
-	if err := scenario.Start(startedAt.Add(time.Second), startedAt); !errors.Is(err, domain.ErrConflict) {
+	if err := s.Start(startedAt.Add(time.Second), startedAt); !errors.Is(err, dError.ErrConflict) {
 		t.Errorf("другое начало: получена ошибка %v, ожидалась ErrConflict", err)
 	}
-	if got, ok := scenario.StartedAt(); !ok || !got.Equal(startedAt) || got.Location() != startedAt.Location() {
+	if got, ok := s.StartedAt(); !ok || !got.Equal(startedAt) || got.Location() != startedAt.Location() {
 		t.Errorf("конфликт заменил первоначальное начало: получено (%v, %t)", got, ok)
 	}
 }
@@ -36,21 +38,21 @@ func TestScenarioStartConfirmationAndConflict(t *testing.T) {
 // BR-05, AC-22: первый вариант сохраняется при подтверждении и конфликте.
 func TestScenarioDetermineModeConfirmationAndConflict(t *testing.T) {
 	now := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
-	scenario := domain.NewScenario(uuid.New())
-	if err := scenario.DetermineMode(domain.LoginModeCredentials, now); err != nil {
+	s := scenario.New(uuid.New())
+	if err := s.DetermineMode(event.LoginModeCredentials, now); err != nil {
 		t.Fatalf("подготовка варианта: %v", err)
 	}
-	if err := scenario.DetermineMode(domain.LoginModeCredentials, now); err != nil {
+	if err := s.DetermineMode(event.LoginModeCredentials, now); err != nil {
 		t.Fatalf("подтверждение варианта: %v", err)
 	}
-	if got, ok := scenario.Mode(); !ok || got != domain.LoginModeCredentials {
+	if got, ok := s.Mode(); !ok || got != event.LoginModeCredentials {
 		t.Errorf("подтверждение изменило вариант: получено (%q, %t)", got, ok)
 	}
 
-	if err := scenario.DetermineMode(domain.LoginModeExistingSession, now); !errors.Is(err, domain.ErrConflict) {
+	if err := s.DetermineMode(event.LoginModeExistingSession, now); !errors.Is(err, dError.ErrConflict) {
 		t.Errorf("другой вариант: получена ошибка %v, ожидалась ErrConflict", err)
 	}
-	if got, ok := scenario.Mode(); !ok || got != domain.LoginModeCredentials {
+	if got, ok := s.Mode(); !ok || got != event.LoginModeCredentials {
 		t.Errorf("конфликт изменил вариант: получено (%q, %t)", got, ok)
 	}
 }
@@ -61,75 +63,75 @@ func TestScenarioOutcomeConfirmationsAndConflicts(t *testing.T) {
 	succeededAt := startedAt.Add(4 * time.Second)
 	outcomes := []struct {
 		name    string
-		outcome domain.Outcome
-		apply   func(*domain.Scenario) error
+		outcome scenario.Outcome
+		apply   func(*scenario.Scenario) error
 	}{
 		{
 			name:    "успех",
-			outcome: domain.OutcomeSuccess,
-			apply: func(s *domain.Scenario) error {
+			outcome: scenario.OutcomeSuccess,
+			apply: func(s *scenario.Scenario) error {
 				return s.Succeed(succeededAt, succeededAt)
 			},
 		},
 		{
 			name:    "техническая ошибка",
-			outcome: domain.OutcomeTechnicalError,
-			apply:   func(s *domain.Scenario) error { return s.Fail(succeededAt) },
+			outcome: scenario.OutcomeTechnicalError,
+			apply:   func(s *scenario.Scenario) error { return s.Fail(succeededAt) },
 		},
 		{
 			name:    "штатный отказ",
-			outcome: domain.OutcomeRejected,
-			apply:   func(s *domain.Scenario) error { return s.Reject(succeededAt) },
+			outcome: scenario.OutcomeRejected,
+			apply:   func(s *scenario.Scenario) error { return s.Reject(succeededAt) },
 		},
 	}
 
 	for _, first := range outcomes {
 		for _, next := range outcomes {
 			t.Run(first.name+"/"+next.name, func(t *testing.T) {
-				scenario := domain.NewScenario(uuid.New())
-				if err := scenario.Start(startedAt, startedAt); err != nil {
+				s := scenario.New(uuid.New())
+				if err := s.Start(startedAt, startedAt); err != nil {
 					t.Fatalf("подготовка начала: %v", err)
 				}
-				if err := scenario.DetermineMode(domain.LoginModeCredentials, startedAt); err != nil {
+				if err := s.DetermineMode(event.LoginModeCredentials, startedAt); err != nil {
 					t.Fatalf("подготовка варианта: %v", err)
 				}
-				if err := first.apply(scenario); err != nil {
+				if err := first.apply(s); err != nil {
 					t.Fatalf("первый исход: %v", err)
 				}
-				if got := scenario.Outcome(); got != first.outcome {
+				if got := s.Outcome(); got != first.outcome {
 					t.Fatalf("первый исход: получено %q, ожидалось %q", got, first.outcome)
 				}
 
-				err := next.apply(scenario)
+				err := next.apply(s)
 				if first.outcome == next.outcome {
 					if err != nil {
 						t.Errorf("подтверждение исхода: %v", err)
 					}
-				} else if !errors.Is(err, domain.ErrConflict) {
+				} else if !errors.Is(err, dError.ErrConflict) {
 					t.Errorf("другой исход: получена ошибка %v, ожидалась ErrConflict", err)
 				}
 
-				if got := scenario.Outcome(); got != first.outcome {
+				if got := s.Outcome(); got != first.outcome {
 					t.Errorf("исход: получено %q, ожидалось %q", got, first.outcome)
 				}
-				if got, ok := scenario.StartedAt(); !ok || !got.Equal(startedAt) {
+				if got, ok := s.StartedAt(); !ok || !got.Equal(startedAt) {
 					t.Errorf("начало: получено (%v, %t), ожидалось (%v, true)", got, ok, startedAt)
 				}
-				if got, ok := scenario.Mode(); !ok || got != domain.LoginModeCredentials {
-					t.Errorf("вариант: получено (%q, %t), ожидалось (%q, true)", got, ok, domain.LoginModeCredentials)
+				if got, ok := s.Mode(); !ok || got != event.LoginModeCredentials {
+					t.Errorf("вариант: получено (%q, %t), ожидалось (%q, true)", got, ok, event.LoginModeCredentials)
 				}
-				if first.outcome == domain.OutcomeSuccess {
-					if got, ok := scenario.SucceededAt(); !ok || !got.Equal(succeededAt) {
+				if first.outcome == scenario.OutcomeSuccess {
+					if got, ok := s.SucceededAt(); !ok || !got.Equal(succeededAt) {
 						t.Errorf("успех: получено (%v, %t), ожидалось (%v, true)", got, ok, succeededAt)
 					}
-					if got, ok := scenario.SuccessfulDuration(); !ok || got != 4*time.Second {
+					if got, ok := s.SuccessfulDuration(); !ok || got != 4*time.Second {
 						t.Errorf("длительность: получено (%v, %t), ожидалось (4s, true)", got, ok)
 					}
 				} else {
-					if got, ok := scenario.SucceededAt(); ok {
+					if got, ok := s.SucceededAt(); ok {
 						t.Errorf("при ошибке или отказе время успеха недоступно: получено (%v, true)", got)
 					}
-					if got, ok := scenario.SuccessfulDuration(); ok {
+					if got, ok := s.SuccessfulDuration(); ok {
 						t.Errorf("при ошибке или отказе длительность недоступна: получено (%v, true)", got)
 					}
 				}
@@ -141,20 +143,20 @@ func TestScenarioOutcomeConfirmationsAndConflicts(t *testing.T) {
 func TestScenarioSucceedConfirmationPreservesTime(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
 	succeededAt := startedAt.Add(4 * time.Second)
-	scenario := domain.NewScenario(uuid.New())
-	if err := scenario.Start(startedAt, startedAt); err != nil {
+	s := scenario.New(uuid.New())
+	if err := s.Start(startedAt, startedAt); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
-	if err := scenario.Succeed(succeededAt, succeededAt); err != nil {
+	if err := s.Succeed(succeededAt, succeededAt); err != nil {
 		t.Fatalf("подготовка успеха: %v", err)
 	}
-	if err := scenario.Succeed(succeededAt.Add(time.Second), succeededAt.Add(time.Second)); err != nil {
+	if err := s.Succeed(succeededAt.Add(time.Second), succeededAt.Add(time.Second)); err != nil {
 		t.Fatalf("подтверждение успеха с другим временем: %v", err)
 	}
-	if got, ok := scenario.SucceededAt(); !ok || !got.Equal(succeededAt) {
+	if got, ok := s.SucceededAt(); !ok || !got.Equal(succeededAt) {
 		t.Errorf("успех: получено (%v, %t), ожидалось (%v, true)", got, ok, succeededAt)
 	}
-	if got, ok := scenario.SuccessfulDuration(); !ok || got != 4*time.Second {
+	if got, ok := s.SuccessfulDuration(); !ok || got != 4*time.Second {
 		t.Errorf("длительность: получено (%v, %t), ожидалось (4s, true)", got, ok)
 	}
 }
@@ -164,56 +166,56 @@ func TestScenarioSuccessfulPath(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
 	succeededAt := startedAt.Add(4 * time.Second)
 	id := uuid.New()
-	scenario := domain.NewScenario(id)
+	s := scenario.New(id)
 
-	if err := scenario.Start(startedAt, startedAt.Add(time.Second)); err != nil {
+	if err := s.Start(startedAt, startedAt.Add(time.Second)); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
-	if err := scenario.DetermineMode(domain.LoginModeCredentials, startedAt.Add(2*time.Second)); err != nil {
+	if err := s.DetermineMode(event.LoginModeCredentials, startedAt.Add(2*time.Second)); err != nil {
 		t.Fatalf("подготовка варианта: %v", err)
 	}
-	if err := scenario.Succeed(succeededAt, startedAt.Add(6*time.Second)); err != nil {
+	if err := s.Succeed(succeededAt, startedAt.Add(6*time.Second)); err != nil {
 		t.Fatalf("подготовка успеха: %v", err)
 	}
 
-	if got := scenario.ID(); got != id {
+	if got := s.ID(); got != id {
 		t.Errorf("идентификатор: получено %q, ожидалось %q", got, id)
 	}
-	if got, ok := scenario.StartedAt(); !ok || !got.Equal(startedAt) {
+	if got, ok := s.StartedAt(); !ok || !got.Equal(startedAt) {
 		t.Errorf("начало: получено (%v, %t), ожидалось (%v, true)", got, ok, startedAt)
 	}
-	if got, ok := scenario.Mode(); !ok || got != domain.LoginModeCredentials {
-		t.Errorf("вариант: получено (%q, %t), ожидалось (%q, true)", got, ok, domain.LoginModeCredentials)
+	if got, ok := s.Mode(); !ok || got != event.LoginModeCredentials {
+		t.Errorf("вариант: получено (%q, %t), ожидалось (%q, true)", got, ok, event.LoginModeCredentials)
 	}
-	if got := scenario.Outcome(); got != domain.OutcomeSuccess {
-		t.Errorf("исход: получено %q, ожидалось %q", got, domain.OutcomeSuccess)
+	if got := s.Outcome(); got != scenario.OutcomeSuccess {
+		t.Errorf("исход: получено %q, ожидалось %q", got, scenario.OutcomeSuccess)
 	}
-	if got, ok := scenario.SucceededAt(); !ok || !got.Equal(succeededAt) {
+	if got, ok := s.SucceededAt(); !ok || !got.Equal(succeededAt) {
 		t.Errorf("успех: получено (%v, %t), ожидалось (%v, true)", got, ok, succeededAt)
 	}
-	if got, ok := scenario.SuccessfulDuration(); !ok || got != 4*time.Second {
+	if got, ok := s.SuccessfulDuration(); !ok || got != 4*time.Second {
 		t.Errorf("длительность: получено (%v, %t), ожидалось (4s, true)", got, ok)
 	}
 }
 
 func TestScenarioSuccessfulDurationUnavailableBeforeSuccess(t *testing.T) {
-	scenario := domain.NewScenario(uuid.New())
-	if got, ok := scenario.SuccessfulDuration(); ok {
+	s := scenario.New(uuid.New())
+	if got, ok := s.SuccessfulDuration(); ok {
 		t.Fatalf("до начала длительность недоступна: получено (%v, true)", got)
 	}
 
 	startedAt := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
-	if err := scenario.Start(startedAt, startedAt); err != nil {
+	if err := s.Start(startedAt, startedAt); err != nil {
 		t.Fatalf("подготовка начала: %v", err)
 	}
-	if got, ok := scenario.SuccessfulDuration(); ok {
+	if got, ok := s.SuccessfulDuration(); ok {
 		t.Fatalf("после начала без успеха длительность недоступна: получено (%v, true)", got)
 	}
 
-	if err := scenario.DetermineMode(domain.LoginModeCredentials, startedAt); err != nil {
+	if err := s.DetermineMode(event.LoginModeCredentials, startedAt); err != nil {
 		t.Fatalf("подготовка варианта: %v", err)
 	}
-	if got, ok := scenario.SuccessfulDuration(); ok {
+	if got, ok := s.SuccessfulDuration(); ok {
 		t.Errorf("после определения варианта без успеха длительность недоступна: получено (%v, true)", got)
 	}
 }
@@ -244,24 +246,24 @@ func TestScenarioSuccessfulDurationBoundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			startedAt := time.Date(2026, time.November, 2, 12, 0, 5, 0, time.UTC)
 			succeededAt := startedAt.Add(tt.interval)
-			scenario := domain.NewScenario(uuid.New())
-			if err := scenario.Start(startedAt, startedAt); err != nil {
+			s := scenario.New(uuid.New())
+			if err := s.Start(startedAt, startedAt); err != nil {
 				t.Fatalf("подготовка начала: %v", err)
 			}
-			if err := scenario.DetermineMode(domain.LoginModeCredentials, startedAt); err != nil {
+			if err := s.DetermineMode(event.LoginModeCredentials, startedAt); err != nil {
 				t.Fatalf("подготовка варианта: %v", err)
 			}
-			if err := scenario.Succeed(succeededAt, startedAt); err != nil {
+			if err := s.Succeed(succeededAt, startedAt); err != nil {
 				t.Fatalf("подготовка успеха: %v", err)
 			}
 
-			if got, ok := scenario.SuccessfulDuration(); ok != tt.available || got != tt.expected {
+			if got, ok := s.SuccessfulDuration(); ok != tt.available || got != tt.expected {
 				t.Errorf("длительность: получено (%v, %t), ожидалось (%v, %t)", got, ok, tt.expected, tt.available)
 			}
-			if got := scenario.Outcome(); got != domain.OutcomeSuccess {
-				t.Errorf("исход: получено %q, ожидалось %q", got, domain.OutcomeSuccess)
+			if got := s.Outcome(); got != scenario.OutcomeSuccess {
+				t.Errorf("исход: получено %q, ожидалось %q", got, scenario.OutcomeSuccess)
 			}
-			if got, ok := scenario.SucceededAt(); !ok || !got.Equal(succeededAt) {
+			if got, ok := s.SucceededAt(); !ok || !got.Equal(succeededAt) {
 				t.Errorf("успех: получено (%v, %t), ожидалось (%v, true)", got, ok, succeededAt)
 			}
 		})
@@ -278,13 +280,13 @@ func TestScenarioWaitingBoundaries(t *testing.T) {
 				name = "с началом/" + offset.String()
 			}
 			t.Run(name, func(t *testing.T) {
-				s := domain.NewScenario(uuid.New())
+				s := scenario.New(uuid.New())
 				var deadline time.Time
 				if withStart {
 					mustAccept(t, s.Start(base.Add(-time.Minute), base))
 					deadline = base.Add(14 * time.Minute)
 				} else {
-					mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
+					mustAccept(t, s.DetermineMode(event.LoginModeCredentials, base))
 					deadline = base.Add(15 * time.Minute)
 				}
 				assertMoment(t, "первое получение", s.FirstReceivedAt, base)
@@ -303,7 +305,7 @@ func TestScenarioWaitingBoundaries(t *testing.T) {
 					}
 					return
 				}
-				if s.Outcome() != domain.OutcomeUnknown {
+				if s.Outcome() != scenario.OutcomeUnknown {
 					t.Fatal("ожидался unknown")
 				}
 				assertMoment(t, "закрытие", s.ClosedAt, now)
@@ -317,7 +319,7 @@ func TestScenarioWaitingBoundaries(t *testing.T) {
 }
 
 func TestScenarioEmptyLifecycle(t *testing.T) {
-	s := domain.NewScenario(uuid.New())
+	s := scenario.New(uuid.New())
 	getters := []struct {
 		name string
 		get  func() (time.Time, bool)
@@ -344,7 +346,7 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 		name        string
 		startedAt   time.Time
 		receivedAt  time.Time
-		wantOutcome domain.Outcome
+		wantOutcome scenario.Outcome
 		wantError   error
 	}{
 		{
@@ -358,29 +360,29 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 		{
 			name:      "новый deadline ровно сейчас",
 			startedAt: base.Add(-10 * time.Minute), receivedAt: base.Add(5 * time.Minute),
-			wantOutcome: domain.OutcomeUnknown,
+			wantOutcome: scenario.OutcomeUnknown,
 		},
 		{
 			name:      "новый deadline уже прошёл",
 			startedAt: base.Add(-20 * time.Minute), receivedAt: base.Add(time.Minute),
-			wantOutcome: domain.OutcomeUnknown,
+			wantOutcome: scenario.OutcomeUnknown,
 		},
 		{
 			name:      "прежний срок наступил",
 			startedAt: base.Add(14 * time.Minute), receivedAt: base.Add(15 * time.Minute),
-			wantOutcome: domain.OutcomeUnknown, wantError: domain.ErrScenarioExpired,
+			wantOutcome: scenario.OutcomeUnknown, wantError: scenario.ErrScenarioExpired,
 		},
 		{
 			name:      "прежний срок прошёл",
 			startedAt: base.Add(14 * time.Minute), receivedAt: base.Add(16 * time.Minute),
-			wantOutcome: domain.OutcomeUnknown, wantError: domain.ErrScenarioExpired,
+			wantOutcome: scenario.OutcomeUnknown, wantError: scenario.ErrScenarioExpired,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := domain.NewScenario(uuid.New())
-			mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
-			mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base.Add(30*time.Second)))
+			s := scenario.New(uuid.New())
+			mustAccept(t, s.DetermineMode(event.LoginModeCredentials, base))
+			mustAccept(t, s.DetermineMode(event.LoginModeCredentials, base.Add(30*time.Second)))
 			assertMoment(t, "срок после подтверждения", s.Deadline, base.Add(15*time.Minute))
 			err := s.Start(tt.startedAt, tt.receivedAt)
 			if !errors.Is(err, tt.wantError) {
@@ -400,16 +402,16 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 				mustAccept(t, s.Start(tt.startedAt, tt.receivedAt.Add(time.Second)))
 				assertMoment(t, "неизменный срок", s.Deadline, tt.startedAt.Add(15*time.Minute))
 			}
-			if tt.wantOutcome == domain.OutcomeUnknown {
+			if tt.wantOutcome == scenario.OutcomeUnknown {
 				assertMoment(t, "закрытие", s.ClosedAt, tt.receivedAt)
 			}
 		})
 	}
 	for _, age := range []time.Duration{15 * time.Minute, 20 * time.Minute} {
 		t.Run("первое начало/"+age.String(), func(t *testing.T) {
-			s := domain.NewScenario(uuid.New())
+			s := scenario.New(uuid.New())
 			mustAccept(t, s.Start(base.Add(-age), base))
-			if s.Outcome() != domain.OutcomeUnknown {
+			if s.Outcome() != scenario.OutcomeUnknown {
 				t.Fatal("просроченное первое начало должно сразу дать unknown")
 			}
 			assertMoment(t, "закрытие", s.ClosedAt, base)
@@ -421,24 +423,24 @@ func TestScenarioLateStartDeadline(t *testing.T) {
 // BR-28, BR-29, BR-33: исходы приложения дополняются, закрытие не переносится.
 func TestScenarioApplicationOutcomeLateFactsAndRetention(t *testing.T) {
 	base := scenarioTime()
-	for _, outcome := range []domain.Outcome{
-		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected,
+	for _, outcome := range []scenario.Outcome{
+		scenario.OutcomeSuccess, scenario.OutcomeTechnicalError, scenario.OutcomeRejected,
 	} {
 		t.Run(string(outcome), func(t *testing.T) {
-			s := domain.NewScenario(uuid.New())
+			s := scenario.New(uuid.New())
 			mustAccept(t, applyOutcome(s, outcome, base.Add(-time.Minute), base))
 			assertMoment(t, "первое получение", s.FirstReceivedAt, base)
 			assertMoment(t, "закрытие без начала", s.ClosedAt, base)
 			late := base.Add(14 * time.Minute)
 			mustAccept(t, s.Start(base.Add(-20*time.Minute), late))
-			mustAccept(t, s.DetermineMode(domain.LoginModeExistingSession, late))
+			mustAccept(t, s.DetermineMode(event.LoginModeExistingSession, late))
 			mustAccept(t, applyOutcome(s, outcome, late, late))
 			if s.Outcome() != outcome || s.CloseIfExpired(late) {
 				t.Fatal("позднее начало не может заменить исход приложения")
 			}
 			assertMoment(t, "закрытие после дополнения", s.ClosedAt, base)
 			assertMoment(t, "retention после дополнения", s.RetentionDeadline, base.Add(15*time.Minute))
-			if outcome == domain.OutcomeSuccess {
+			if outcome == scenario.OutcomeSuccess {
 				assertMoment(t, "первый успех", s.SucceededAt, base.Add(-time.Minute))
 			}
 			for _, offset := range []time.Duration{-time.Millisecond, 0, time.Millisecond} {
@@ -457,47 +459,47 @@ func TestScenarioUnknownFacts(t *testing.T) {
 		name      string
 		withStart bool
 		withMode  bool
-		apply     func(*domain.Scenario, time.Time) error
+		apply     func(*scenario.Scenario, time.Time) error
 		wantError error
 	}
 	tests := []factCase{
 		{name: "подтверждение начала", withStart: true,
-			apply: func(s *domain.Scenario, now time.Time) error { return s.Start(base, now) }},
-		{name: "противоречие началу", withStart: true, wantError: domain.ErrConflict,
-			apply: func(s *domain.Scenario, now time.Time) error { return s.Start(base.Add(time.Second), now) }},
-		{name: "недостающее начало", withMode: true, wantError: domain.ErrScenarioExpired,
-			apply: func(s *domain.Scenario, now time.Time) error { return s.Start(base, now) }},
+			apply: func(s *scenario.Scenario, now time.Time) error { return s.Start(base, now) }},
+		{name: "противоречие началу", withStart: true, wantError: dError.ErrConflict,
+			apply: func(s *scenario.Scenario, now time.Time) error { return s.Start(base.Add(time.Second), now) }},
+		{name: "недостающее начало", withMode: true, wantError: scenario.ErrScenarioExpired,
+			apply: func(s *scenario.Scenario, now time.Time) error { return s.Start(base, now) }},
 		{name: "подтверждение варианта", withMode: true,
-			apply: func(s *domain.Scenario, now time.Time) error {
-				return s.DetermineMode(domain.LoginModeCredentials, now)
+			apply: func(s *scenario.Scenario, now time.Time) error {
+				return s.DetermineMode(event.LoginModeCredentials, now)
 			}},
-		{name: "противоречие варианту", withMode: true, wantError: domain.ErrConflict,
-			apply: func(s *domain.Scenario, now time.Time) error {
-				return s.DetermineMode(domain.LoginModeExistingSession, now)
+		{name: "противоречие варианту", withMode: true, wantError: dError.ErrConflict,
+			apply: func(s *scenario.Scenario, now time.Time) error {
+				return s.DetermineMode(event.LoginModeExistingSession, now)
 			}},
-		{name: "недостающий вариант", withStart: true, wantError: domain.ErrScenarioExpired,
-			apply: func(s *domain.Scenario, now time.Time) error {
-				return s.DetermineMode(domain.LoginModeCredentials, now)
+		{name: "недостающий вариант", withStart: true, wantError: scenario.ErrScenarioExpired,
+			apply: func(s *scenario.Scenario, now time.Time) error {
+				return s.DetermineMode(event.LoginModeCredentials, now)
 			}},
 	}
-	for _, outcome := range []domain.Outcome{
-		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected,
+	for _, outcome := range []scenario.Outcome{
+		scenario.OutcomeSuccess, scenario.OutcomeTechnicalError, scenario.OutcomeRejected,
 	} {
 		tests = append(tests, factCase{
-			name: string(outcome), withStart: true, wantError: domain.ErrScenarioExpired,
-			apply: func(s *domain.Scenario, now time.Time) error {
+			name: string(outcome), withStart: true, wantError: scenario.ErrScenarioExpired,
+			apply: func(s *scenario.Scenario, now time.Time) error {
 				return applyOutcome(s, outcome, base.Add(time.Second), now)
 			},
 		})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := domain.NewScenario(uuid.New())
+			s := scenario.New(uuid.New())
 			if tt.withStart {
 				mustAccept(t, s.Start(base, base))
 			}
 			if tt.withMode {
-				mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
+				mustAccept(t, s.DetermineMode(event.LoginModeCredentials, base))
 			}
 			closedAt := base.Add(16 * time.Minute)
 			s.CloseIfExpired(closedAt)
@@ -521,9 +523,9 @@ func TestScenarioUnknownFacts(t *testing.T) {
 // BR-50, BR-55: чистая проверка, самостоятельное закрытие и приём не слиты.
 func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 	base := scenarioTime()
-	s := domain.NewScenario(uuid.New())
+	s := scenario.New(uuid.New())
 	mustAccept(t, s.Start(base, base))
-	mustAccept(t, s.DetermineMode(domain.LoginModeCredentials, base))
+	mustAccept(t, s.DetermineMode(event.LoginModeCredentials, base))
 	now := base.Add(15 * time.Minute)
 	before := *s
 	checks := []struct {
@@ -531,14 +533,14 @@ func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 		check     func() error
 		wantError error
 	}{
-		{name: "конфликт начала", wantError: domain.ErrConflict,
+		{name: "конфликт начала", wantError: dError.ErrConflict,
 			check: func() error { return s.CheckStart(base.Add(time.Second), now) }},
 		{name: "подтверждение начала", check: func() error { return s.CheckStart(base, now) }},
-		{name: "конфликт варианта", wantError: domain.ErrConflict,
-			check: func() error { return s.CheckMode(domain.LoginModeExistingSession, now) }},
-		{name: "подтверждение варианта", check: func() error { return s.CheckMode(domain.LoginModeCredentials, now) }},
-		{name: "исход после deadline", wantError: domain.ErrScenarioExpired,
-			check: func() error { return s.CheckOutcome(domain.OutcomeSuccess, now) }},
+		{name: "конфликт варианта", wantError: dError.ErrConflict,
+			check: func() error { return s.CheckMode(event.LoginModeExistingSession, now) }},
+		{name: "подтверждение варианта", check: func() error { return s.CheckMode(event.LoginModeCredentials, now) }},
+		{name: "исход после deadline", wantError: scenario.ErrScenarioExpired,
+			check: func() error { return s.CheckOutcome(scenario.OutcomeSuccess, now) }},
 	}
 	for _, tt := range checks {
 		t.Run(tt.name, func(t *testing.T) {
@@ -550,13 +552,13 @@ func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 			}
 		})
 	}
-	if err := s.Start(base.Add(time.Second), now); !errors.Is(err, domain.ErrConflict) || *s != before {
+	if err := s.Start(base.Add(time.Second), now); !errors.Is(err, dError.ErrConflict) || *s != before {
 		t.Fatal("конфликт должен иметь приоритет перед закрытием")
 	}
 	if err := s.DetermineMode(
-		domain.LoginModeExistingSession,
+		event.LoginModeExistingSession,
 		now,
-	); !errors.Is(err, domain.ErrConflict) ||
+	); !errors.Is(err, dError.ErrConflict) ||
 		*s != before {
 		t.Fatal("конфликт варианта должен иметь приоритет перед закрытием")
 	}
@@ -564,7 +566,7 @@ func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 		t.Fatal("самостоятельное закрытие должно быть доступно до проверки вместимости")
 	}
 	// Входящий факт не принимается: будущая application может отказать по вместимости.
-	if got := s.TakeMeasurements().Completion; got != domain.OutcomeUnknown {
+	if got := s.TakeMeasurements().Completion; got != scenario.OutcomeUnknown {
 		t.Errorf("самостоятельное закрытие без нового факта: %q", got)
 	}
 	assertMoment(t, "закрытие", s.ClosedAt, now)
@@ -572,20 +574,20 @@ func TestScenarioChecksAndIndependentExpiry(t *testing.T) {
 
 func TestScenarioFinishAtDeadline(t *testing.T) {
 	base := scenarioTime()
-	for _, outcome := range []domain.Outcome{
-		domain.OutcomeSuccess, domain.OutcomeTechnicalError, domain.OutcomeRejected,
+	for _, outcome := range []scenario.Outcome{
+		scenario.OutcomeSuccess, scenario.OutcomeTechnicalError, scenario.OutcomeRejected,
 	} {
 		for _, offset := range []time.Duration{-time.Millisecond, 0, time.Millisecond} {
 			t.Run(string(outcome)+"/"+offset.String(), func(t *testing.T) {
-				s := domain.NewScenario(uuid.New())
+				s := scenario.New(uuid.New())
 				mustAccept(t, s.Start(base, base))
 				now := base.Add(15*time.Minute + offset)
 				err := applyOutcome(s, outcome, base.Add(time.Second), now)
 				wantOutcome := outcome
 				var wantError error
 				if offset >= 0 {
-					wantOutcome = domain.OutcomeUnknown
-					wantError = domain.ErrScenarioExpired
+					wantOutcome = scenario.OutcomeUnknown
+					wantError = scenario.ErrScenarioExpired
 				}
 				if !errors.Is(err, wantError) || s.Outcome() != wantOutcome {
 					t.Fatalf("завершение: (%q, %v), ожидалось (%q, %v)", s.Outcome(), err, wantOutcome, wantError)
@@ -619,13 +621,13 @@ func assertMoment(t *testing.T, name string, get func() (time.Time, bool), expec
 	}
 }
 
-func applyOutcome(s *domain.Scenario, outcome domain.Outcome, occurredAt, now time.Time) error {
+func applyOutcome(s *scenario.Scenario, outcome scenario.Outcome, occurredAt, now time.Time) error {
 	switch outcome {
-	case domain.OutcomeSuccess:
+	case scenario.OutcomeSuccess:
 		return s.Succeed(occurredAt, now)
-	case domain.OutcomeTechnicalError:
+	case scenario.OutcomeTechnicalError:
 		return s.Fail(now)
-	case domain.OutcomeRejected:
+	case scenario.OutcomeRejected:
 		return s.Reject(now)
 	default:
 		panic("неподдерживаемый исход в тесте")

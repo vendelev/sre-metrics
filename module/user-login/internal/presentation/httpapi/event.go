@@ -6,11 +6,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 )
 
-type eventRequest struct {
+type rawEvent struct {
 	EventID    string  `json:"event_id"`
 	ScenarioID string  `json:"scenario_id"`
 	OccurredAt string  `json:"occurred_at"`
@@ -19,49 +18,49 @@ type eventRequest struct {
 	Mode       *string `json:"mode"`
 }
 
-func decodeEvent(body []byte) (domain.Event, error) {
-	var request eventRequest
+func decodeEvent(body []byte) (dEvent.Request, error) {
+	var request rawEvent
 	if err := json.Unmarshal(body, &request); err != nil {
-		return domain.Event{}, err
+		return dEvent.Request{}, err
 	}
 
 	eventID, err := uuid.Parse(request.EventID)
 	if err != nil {
-		return domain.Event{}, errors.New("невалидное id события")
+		return dEvent.Request{}, errors.New("невалидное id события")
 	}
 
 	scenarioID, err := uuid.Parse(request.ScenarioID)
 	if err != nil {
-		return domain.Event{}, errors.New("невалидное id сценария")
+		return dEvent.Request{}, errors.New("невалидное id сценария")
 	}
 
 	occurredAt, err := time.Parse("2006-01-02T15:04:05.000Z", request.OccurredAt)
 	if err != nil {
-		return domain.Event{}, errors.New("невалидное время события")
+		return dEvent.Request{}, errors.New("невалидное время события")
 	}
 
-	source, err := domain.ParseSource(request.Source)
+	source, err := dEvent.ParseSource(request.Source)
 	if err != nil {
-		return domain.Event{}, err
+		return dEvent.Request{}, err
 	}
 
-	mode, err := domain.ParseMode(request.Mode)
+	mode, err := dEvent.ParseMode(request.Mode)
 	if err != nil {
-		return domain.Event{}, err
+		return dEvent.Request{}, err
 	}
 
-	eventType, err := domain.ParseEventType(request.Type, source, mode)
+	eventType, err := dEvent.ParseType(request.Type, source, mode)
 	if err != nil {
-		return domain.Event{}, err
+		return dEvent.Request{}, err
 	}
 
-	event := domain.Event{
+	event := dEvent.Request{
 		EventID:    eventID,
 		ScenarioID: scenarioID,
 		OccurredAt: occurredAt,
 		Source:     source,
 		Type:       eventType,
-		Mode:       mode,
+		AuthMode:   mode,
 	}
 
 	return event, nil

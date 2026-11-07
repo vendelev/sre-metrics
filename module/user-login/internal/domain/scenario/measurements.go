@@ -1,6 +1,10 @@
-package domain
+package scenario
 
-import "time"
+import (
+	"time"
+
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+)
 
 // Measurements содержит новые измерения для регистрации в метриках:
 // одно завершение, одну техническую ошибку известного варианта
@@ -8,20 +12,13 @@ import "time"
 // Пустые поля означают отсутствие нового измерения; нулевая длительность допустима.
 type Measurements struct {
 	Completion         Outcome
-	TechnicalErrorMode OAuthMode
+	TechnicalErrorMode dEvent.OAuthMode
 	SuccessfulDuration *DurationObservation
-}
-
-// MeasurementRecorder синхронно регистрирует новые проверенные измерения локально.
-// Реализация не выполняет сеть, не запускает задачи и не обращается обратно к Store.
-// Инструменты должны быть готовы до первого вызова; Record не возвращает ошибок.
-type MeasurementRecorder interface {
-	Record(measurements Measurements)
 }
 
 // DurationObservation описывает корректную успешную длительность известного варианта.
 type DurationObservation struct {
-	Mode     OAuthMode
+	Mode     dEvent.OAuthMode
 	Duration time.Duration
 }
 
@@ -43,13 +40,13 @@ func (s *Scenario) TakeMeasurements() Measurements {
 		result.Completion = s.outcome
 		s.measurements.hasCompletion = true
 	}
-	if s.outcome == OutcomeTechnicalError && s.mode != nil && !s.measurements.hasTechnicalError {
-		result.TechnicalErrorMode = *s.mode
+	if s.outcome == OutcomeTechnicalError && s.authMode != nil && !s.measurements.hasTechnicalError {
+		result.TechnicalErrorMode = *s.authMode
 		s.measurements.hasTechnicalError = true
 	}
-	if s.mode != nil && !s.measurements.hasSuccessfulDuration {
+	if s.authMode != nil && !s.measurements.hasSuccessfulDuration {
 		if duration, ok := s.SuccessfulDuration(); ok {
-			result.SuccessfulDuration = &DurationObservation{Mode: *s.mode, Duration: duration}
+			result.SuccessfulDuration = &DurationObservation{Mode: *s.authMode, Duration: duration}
 			s.measurements.hasSuccessfulDuration = true
 		}
 	}

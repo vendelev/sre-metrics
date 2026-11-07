@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	collector "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -23,7 +24,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
@@ -98,20 +98,20 @@ func processExportEvent(
 	t *testing.T,
 	o *application.LoginObserver,
 	scenario int,
-	kind domain.EventType,
+	kind event.Type,
 	at time.Time,
 ) string {
 	t.Helper()
-	e := domain.Event{
+	e := event.Request{
 		EventID:    uuid.Must(uuid.NewV7()),
 		ScenarioID: uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-9000-%012x", scenario)),
-		Source:     domain.SourceMIS,
+		Source:     event.SourceMIS,
 		Type:       kind,
 		OccurredAt: at,
 	}
-	if kind == domain.EventTypeLoginModeDetermined {
-		mode := domain.LoginModeCredentials
-		e.Source, e.Mode = domain.SourceAuth, &mode
+	if kind == event.LoginModeDetermined {
+		mode := event.LoginModeCredentials
+		e.Source, e.AuthMode = event.SourceAuth, &mode
 	}
 	if _, err := o.Process(e); err != nil {
 		t.Fatal(err)
@@ -307,13 +307,13 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	for i, seconds := range []int{0, 5, 30, 60, 61} {
 		eventIDs = append(
 			eventIDs,
-			processExportEvent(t, o, i+1, domain.EventTypeLoginStarted, now.Add(-time.Duration(seconds)*time.Second)),
+			processExportEvent(t, o, i+1, event.LoginStarted, now.Add(-time.Duration(seconds)*time.Second)),
 		)
-		eventIDs = append(eventIDs, processExportEvent(t, o, i+1, domain.EventTypeLoginModeDetermined, now))
-		eventIDs = append(eventIDs, processExportEvent(t, o, i+1, domain.EventTypeLoginSucceeded, now))
+		eventIDs = append(eventIDs, processExportEvent(t, o, i+1, event.LoginModeDetermined, now))
+		eventIDs = append(eventIDs, processExportEvent(t, o, i+1, event.LoginSucceeded, now))
 	}
-	processExportEvent(t, o, 10, domain.EventTypeLoginFailed, now)
-	processExportEvent(t, o, 10, domain.EventTypeLoginModeDetermined, now)
+	processExportEvent(t, o, 10, event.LoginFailed, now)
+	processExportEvent(t, o, 10, event.LoginModeDetermined, now)
 	failure.Store(true)
 	if err := flush(t, p); err == nil || strings.Contains(err.Error(), "synthetic-secret") {
 		t.Fatalf("ошибка отправки: %v", err)
@@ -322,7 +322,7 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatal("retry внутри попытки")
 	}
-	processExportEvent(t, o, 11, domain.EventTypeLoginRejected, now)
+	processExportEvent(t, o, 11, event.LoginRejected, now)
 	failure.Store(false)
 	if err := flush(t, p); err != nil {
 		t.Fatal(err)

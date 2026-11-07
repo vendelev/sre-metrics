@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	event2 "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	scenario2 "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
 )
@@ -33,10 +34,10 @@ func TestSDKBaselineAndIndependence(t *testing.T) {
 		}
 	}
 	before := snapshot(t, f)
-	a.Completed[domain.OutcomeSuccess] = 999
-	a.TechnicalErrors[domain.LoginModeCredentials] = 999
-	a.Durations[domain.LoginModeCredentials] = oteltest.Duration{Count: 999}
-	delete(a.Completed, domain.OutcomeUnknown)
+	a.Completed[scenario2.OutcomeSuccess] = 999
+	a.TechnicalErrors[event2.LoginModeCredentials] = 999
+	a.Durations[event2.LoginModeCredentials] = oteltest.Duration{Count: 999}
+	delete(a.Completed, scenario2.OutcomeUnknown)
 	if !reflect.DeepEqual(before, snapshot(t, f)) {
 		t.Fatal("снимок открыл доступ к внутренним значениям")
 	}
@@ -47,38 +48,38 @@ func TestSDKBaselineAndIndependence(t *testing.T) {
 
 // BR-34: поздний факт добавляет только недостающее измерение.
 func TestProcessLateMeasurementsOnce(t *testing.T) {
-	for _, kind := range []domain.EventType{domain.EventTypeLoginSucceeded, domain.EventTypeLoginFailed} {
+	for _, kind := range []event2.Type{event2.LoginSucceeded, event2.LoginFailed} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
 			finish := event(1, 100, kind, f.base)
 			process(t, f, finish, nil)
 			a := snapshot(t, f)
-			if a.Durations[domain.LoginModeCredentials].Count != 0 ||
-				a.TechnicalErrors[domain.LoginModeCredentials] != 0 {
+			if a.Durations[event2.LoginModeCredentials].Count != 0 ||
+				a.TechnicalErrors[event2.LoginModeCredentials] != 0 {
 				t.Fatal("частичные данные угадали вариант или начало")
 			}
-			process(t, f, event(2, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
+			process(t, f, event(2, 100, event2.LoginModeDetermined, f.base), nil)
 			classified := snapshot(t, f)
-			if kind == domain.EventTypeLoginFailed && classified.TechnicalErrors[domain.LoginModeCredentials] != 1 {
+			if kind == event2.LoginFailed && classified.TechnicalErrors[event2.LoginModeCredentials] != 1 {
 				t.Fatal("классифицированная ошибка не должна требовать начала")
 			}
-			if classified.Durations[domain.LoginModeCredentials].Count != 0 {
+			if classified.Durations[event2.LoginModeCredentials].Count != 0 {
 				t.Fatal("известного варианта недостаточно для длительности без начала")
 			}
-			process(t, f, event(3, 100, domain.EventTypeLoginStarted, f.base.Add(-4*time.Second)), nil)
+			process(t, f, event(3, 100, event2.LoginStarted, f.base.Add(-4*time.Second)), nil)
 			process(t, f, finish, nil)
 			process(t, f, event(4, 100, kind, f.base.Add(time.Second)), nil)
-			process(t, f, event(5, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
+			process(t, f, event(5, 100, event2.LoginModeDetermined, f.base), nil)
 			a = snapshot(t, f)
-			if kind == domain.EventTypeLoginSucceeded {
-				if a.Completed[domain.OutcomeSuccess] != 1 {
+			if kind == event2.LoginSucceeded {
+				if a.Completed[scenario2.OutcomeSuccess] != 1 {
 					t.Fatal("успех посчитан не один раз")
 				}
 				want := oteltest.Duration{BucketCounts: [4]uint64{1, 0, 0, 0}, Count: 1, SumSeconds: 4}
-				if a.Durations[domain.LoginModeCredentials] != want {
+				if a.Durations[event2.LoginModeCredentials] != want {
 					t.Fatalf("длительность заменена или повторена: %+v", a)
 				}
-			} else if a.Completed[domain.OutcomeTechnicalError] != 1 || a.TechnicalErrors[domain.LoginModeCredentials] != 1 {
+			} else if a.Completed[scenario2.OutcomeTechnicalError] != 1 || a.TechnicalErrors[event2.LoginModeCredentials] != 1 {
 				t.Fatalf("поздний вариант ошибки повторно увеличил счётчик: %+v", a)
 			}
 			closedAt, _ := scenario(t, f, 100).ClosedAt()
@@ -99,8 +100,8 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 	for _, order := range []string{"начало первым", "успех первым"} {
 		t.Run(order, func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
-			started := event(1, 100, domain.EventTypeLoginStarted, f.base)
-			finished := event(2, 100, domain.EventTypeLoginSucceeded, f.base.Add(-time.Second))
+			started := event(1, 100, event2.LoginStarted, f.base)
+			finished := event(2, 100, event2.LoginSucceeded, f.base.Add(-time.Second))
 			first, second := started, finished
 			if order == "успех первым" {
 				first, second = finished, started
@@ -113,22 +114,22 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 				t.Fatalf("отсутствует безопасная диагностика: %+v", got)
 			}
 			// Диагностика возвращена наружу после освобождения блокировки, снимок доступен.
-			if snapshot(t, f).Completed[domain.OutcomeSuccess] != 1 {
+			if snapshot(t, f).Completed[scenario2.OutcomeSuccess] != 1 {
 				t.Fatal("диагностика изменила успех")
 			}
-			process(t, f, event(3, 100, domain.EventTypeLoginModeDetermined, f.base), nil)
+			process(t, f, event(3, 100, event2.LoginModeDetermined, f.base), nil)
 			if result := process(t, f, second, nil); result.NegativeDurationScenarioID != uuid.Nil {
 				t.Fatal("повтор повторил диагностику")
 			}
 			if result := process(
 				t,
 				f,
-				event(4, 100, domain.EventTypeLoginSucceeded, f.base),
+				event(4, 100, event2.LoginSucceeded, f.base),
 				nil,
 			); result.NegativeDurationScenarioID != uuid.Nil {
 				t.Fatal("смысловое подтверждение повторило диагностику")
 			}
-			if snapshot(t, f).Durations[domain.LoginModeCredentials].Count != 0 {
+			if snapshot(t, f).Durations[event2.LoginModeCredentials].Count != 0 {
 				t.Fatal("отрицательная длительность превратилась в наблюдение")
 			}
 		})

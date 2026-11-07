@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
@@ -84,7 +84,7 @@ func TestNewServiceSharesState(t *testing.T) {
 	}
 }
 
-func testService(t *testing.T, cfg config.Config, c domain.Clock) *service {
+func testService(t *testing.T, cfg config.Config, c contract.Clock) *service {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ type failedStore struct {
 	cancel context.CancelFunc
 }
 
-func (s failedStore) Within(func(domain.State) error) error {
+func (s failedStore) Within(func(contract.State) error) error {
 	if s.cancel != nil {
 		s.cancel()
 	}

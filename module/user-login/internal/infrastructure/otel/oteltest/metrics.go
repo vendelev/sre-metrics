@@ -6,19 +6,20 @@ import (
 	"context"
 	"testing"
 
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 )
 
 // Values — проекция одного SDK-сбора без времён, удобная для предметных сравнений.
 // Полный контракт метаданных проверяется отдельно по ResourceMetrics.
 type Values struct {
-	Completed       map[domain.Outcome]int64
-	TechnicalErrors map[domain.OAuthMode]int64
-	Durations       map[domain.OAuthMode]Duration
+	Completed       map[dScenario.Outcome]int64
+	TechnicalErrors map[dEvent.OAuthMode]int64
+	Durations       map[dEvent.OAuthMode]Duration
 }
 
 // Duration — проекция настоящей SDK Histogram, а не собственный накопитель.
@@ -58,9 +59,9 @@ func Collect(t testing.TB, r *otel.Recorder) metricdata.ResourceMetrics {
 func Read(t testing.TB, r *otel.Recorder) Values {
 	t.Helper()
 	result := Values{
-		Completed:       make(map[domain.Outcome]int64),
-		TechnicalErrors: make(map[domain.OAuthMode]int64),
-		Durations:       make(map[domain.OAuthMode]Duration),
+		Completed:       make(map[dScenario.Outcome]int64),
+		TechnicalErrors: make(map[dEvent.OAuthMode]int64),
+		Durations:       make(map[dEvent.OAuthMode]Duration),
 	}
 	for _, scope := range Collect(t, r).ScopeMetrics {
 		for _, m := range scope.Metrics {
@@ -70,10 +71,10 @@ func Read(t testing.TB, r *otel.Recorder) Values {
 					switch m.Name {
 					case otel.CompletedName:
 						v, _ := p.Attributes.Value(attribute.Key("outcome"))
-						result.Completed[domain.Outcome(v.AsString())] = p.Value
+						result.Completed[dScenario.Outcome(v.AsString())] = p.Value
 					case otel.TechnicalErrorsName:
 						v, _ := p.Attributes.Value(attribute.Key("mode"))
-						result.TechnicalErrors[domain.OAuthMode(v.AsString())] = p.Value
+						result.TechnicalErrors[dEvent.OAuthMode(v.AsString())] = p.Value
 					}
 				}
 			case metricdata.Histogram[float64]:
@@ -82,7 +83,7 @@ func Read(t testing.TB, r *otel.Recorder) Values {
 					if len(p.BucketCounts) != 4 {
 						t.Fatalf("неожиданные корзины SDK: %v", p.BucketCounts)
 					}
-					result.Durations[domain.OAuthMode(v.AsString())] = Duration{
+					result.Durations[dEvent.OAuthMode(v.AsString())] = Duration{
 						BucketCounts: [4]uint64(p.BucketCounts), Count: p.Count, SumSeconds: p.Sum,
 					}
 				}

@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
 // Process обрабатывает предметное событие после транспортной валидации.
-func (o *LoginObserver) Process(event domain.Event) (ProcessResult, error) {
+func (o *LoginObserver) Process(event dEvent.Request) (ProcessResult, error) {
 	var result ProcessResult
-	err := o.store.Within(func(state domain.State) error {
+	err := o.store.Within(func(state dContract.State) error {
 		now := o.clock.Now()
 		var err error
 		result, err = processEvent(state, event, now)
@@ -20,19 +23,19 @@ func (o *LoginObserver) Process(event domain.Event) (ProcessResult, error) {
 	return result, operationError("обработка события", err)
 }
 
-func equalEvents(a, b domain.Event) bool {
+func equalEvents(a, b dEvent.Request) bool {
 	sameIDs := a.EventID == b.EventID && a.ScenarioID == b.ScenarioID
 	sameFact := a.Source == b.Source && a.Type == b.Type && a.OccurredAt.Equal(b.OccurredAt)
 	if !sameIDs || !sameFact {
 		return false
 	}
-	if a.Mode == nil || b.Mode == nil {
-		return a.Mode == nil && b.Mode == nil
+	if a.AuthMode == nil || b.AuthMode == nil {
+		return a.AuthMode == nil && b.AuthMode == nil
 	}
-	return *a.Mode == *b.Mode
+	return *a.AuthMode == *b.AuthMode
 }
 
-func processEvent(state domain.State, event domain.Event, now time.Time) (ProcessResult, error) {
+func processEvent(state dContract.State, event dEvent.Request, now time.Time) (ProcessResult, error) {
 	if err := removeRetained(state, now); err != nil {
 		return ProcessResult{}, err
 	}
@@ -40,21 +43,21 @@ func processEvent(state domain.State, event domain.Event, now time.Time) (Proces
 		if equalEvents(stored, event) {
 			return ProcessResult{}, nil
 		}
-		return ProcessResult{}, domain.ErrConflict
+		return ProcessResult{}, dError.ErrConflict
 	}
-	if err := domain.CheckEventTime(event.OccurredAt, now); err != nil {
-		return ProcessResult{}, fmt.Errorf("%w: %w", domain.ErrInvalidEvent, err)
+	if err := dError.CheckEventTime(event.OccurredAt, now); err != nil {
+		return ProcessResult{}, fmt.Errorf("%w: %w", dError.ErrInvalidEvent, err)
 	}
-	scenario, exists := state.FindScenario(event.ScenarioID)
+	loginScenario, exists := state.FindScenario(event.ScenarioID)
 	if !exists {
-		scenario = domain.NewScenario(event.ScenarioID)
+		loginScenario = dScenario.New(event.ScenarioID)
 	}
-	checkErr := checkFact(scenario, event, now)
-	if errors.Is(checkErr, domain.ErrConflict) {
+	checkErr := checkFact(loginScenario, event, now)
+	if errors.Is(checkErr, dError.ErrConflict) {
 		return ProcessResult{}, checkErr
 	}
-	if exists && scenario.CloseIfExpired(now) {
-		if err := state.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
+	if exists && loginScenario.CloseIfExpired(now) {
+		if err := state.Commit(loginScenario, nil, loginScenario.TakeMeasurements()); err != nil {
 			return ProcessResult{}, err
 		}
 	}
@@ -64,50 +67,50 @@ func processEvent(state domain.State, event domain.Event, now time.Time) (Proces
 	if err := state.CheckCapacity(event.ScenarioID); err != nil {
 		return ProcessResult{}, err
 	}
-	hadNegativeDuration := scenario.HasNegativeDuration()
-	if err := acceptFact(scenario, event, now); err != nil {
+	hadNegativeDuration := loginScenario.HasNegativeDuration()
+	if err := acceptFact(loginScenario, event, now); err != nil {
 		return ProcessResult{}, internalError("приём проверенного факта", err)
 	}
-	measurements := scenario.TakeMeasurements()
-	if err := state.Commit(scenario, &event, measurements); err != nil {
+	measurements := loginScenario.TakeMeasurements()
+	if err := state.Commit(loginScenario, &event, measurements); err != nil {
 		return ProcessResult{}, err
 	}
-	if !hadNegativeDuration && scenario.HasNegativeDuration() {
-		return ProcessResult{NegativeDurationScenarioID: scenario.ID()}, nil
+	if !hadNegativeDuration && loginScenario.HasNegativeDuration() {
+		return ProcessResult{NegativeDurationScenarioID: loginScenario.ID()}, nil
 	}
 	return ProcessResult{}, nil
 }
 
-func checkFact(scenario *domain.Scenario, event domain.Event, now time.Time) error {
+func checkFact(loginScenario *dScenario.Scenario, event dEvent.Request, now time.Time) error {
 	switch event.Type {
-	case domain.EventTypeLoginStarted:
-		return scenario.CheckStart(event.OccurredAt, now)
-	case domain.EventTypeLoginModeDetermined:
-		return scenario.CheckMode(*event.Mode, now)
-	case domain.EventTypeLoginSucceeded:
-		return scenario.CheckOutcome(domain.OutcomeSuccess, now)
-	case domain.EventTypeLoginFailed:
-		return scenario.CheckOutcome(domain.OutcomeTechnicalError, now)
-	case domain.EventTypeLoginRejected:
-		return scenario.CheckOutcome(domain.OutcomeRejected, now)
+	case dEvent.LoginStarted:
+		return loginScenario.CheckStart(event.OccurredAt, now)
+	case dEvent.LoginModeDetermined:
+		return loginScenario.CheckMode(*event.AuthMode, now)
+	case dEvent.LoginSucceeded:
+		return loginScenario.CheckOutcome(dScenario.OutcomeSuccess, now)
+	case dEvent.LoginFailed:
+		return loginScenario.CheckOutcome(dScenario.OutcomeTechnicalError, now)
+	case dEvent.LoginRejected:
+		return loginScenario.CheckOutcome(dScenario.OutcomeRejected, now)
 	default:
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
 }
 
-func acceptFact(scenario *domain.Scenario, event domain.Event, now time.Time) error {
+func acceptFact(scenario *dScenario.Scenario, event dEvent.Request, now time.Time) error {
 	switch event.Type {
-	case domain.EventTypeLoginStarted:
+	case dEvent.LoginStarted:
 		return scenario.Start(event.OccurredAt, now)
-	case domain.EventTypeLoginModeDetermined:
-		return scenario.DetermineMode(*event.Mode, now)
-	case domain.EventTypeLoginSucceeded:
+	case dEvent.LoginModeDetermined:
+		return scenario.DetermineMode(*event.AuthMode, now)
+	case dEvent.LoginSucceeded:
 		return scenario.Succeed(event.OccurredAt, now)
-	case domain.EventTypeLoginFailed:
+	case dEvent.LoginFailed:
 		return scenario.Fail(now)
-	case domain.EventTypeLoginRejected:
+	case dEvent.LoginRejected:
 		return scenario.Reject(now)
 	default:
-		return domain.ErrInternal
+		return dError.ErrInternal
 	}
 }

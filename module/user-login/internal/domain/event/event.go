@@ -1,4 +1,6 @@
-package domain
+// Package event определяет DTO входящего события, типы его полей
+// и правила разбора источника, типа факта и варианта входа.
+package event
 
 import (
 	"errors"
@@ -26,26 +28,26 @@ func ParseSource(value string) (Source, error) {
 	}
 }
 
-// EventType обозначает тип факта входа.
-type EventType string
+// Type обозначает тип факта входа.
+type Type string
 
 const (
-	EventTypeLoginStarted        EventType = "login_started"
-	EventTypeLoginModeDetermined EventType = "login_mode_determined"
-	EventTypeLoginSucceeded      EventType = "login_succeeded"
-	EventTypeLoginFailed         EventType = "login_failed"
-	EventTypeLoginRejected       EventType = "login_rejected"
+	LoginStarted        Type = "login_started"
+	LoginModeDetermined Type = "login_mode_determined"
+	LoginSucceeded      Type = "login_succeeded"
+	LoginFailed         Type = "login_failed"
+	LoginRejected       Type = "login_rejected"
 )
 
-func ParseEventType(value string, source Source, mode *OAuthMode) (EventType, error) {
+func ParseType(value string, source Source, mode *OAuthMode) (Type, error) {
 	er := errors.New("невалидный тип события")
-	et := EventType(value)
+	et := Type(value)
 	switch et {
-	case EventTypeLoginStarted,
-		EventTypeLoginModeDetermined,
-		EventTypeLoginSucceeded,
-		EventTypeLoginFailed,
-		EventTypeLoginRejected:
+	case LoginStarted,
+		LoginModeDetermined,
+		LoginSucceeded,
+		LoginFailed,
+		LoginRejected:
 		break
 	default:
 		return "", er
@@ -54,17 +56,17 @@ func ParseEventType(value string, source Source, mode *OAuthMode) (EventType, er
 	isAuthService := mode != nil
 
 	switch et {
-	case EventTypeLoginStarted,
-		EventTypeLoginSucceeded:
+	case LoginStarted,
+		LoginSucceeded:
 		if source != SourceMIS || isAuthService {
 			return "", er
 		}
-	case EventTypeLoginFailed,
-		EventTypeLoginRejected:
+	case LoginFailed,
+		LoginRejected:
 		if (source != SourceMIS && source != SourceAuth) || isAuthService {
 			return "", er
 		}
-	case EventTypeLoginModeDetermined:
+	case LoginModeDetermined:
 		if source != SourceAuth || mode == nil {
 			return "", er
 		}
@@ -103,23 +105,23 @@ func ParseMode(value *string) (*OAuthMode, error) {
 	}
 }
 
-// Event объединяет предметные данные одного факта входа.
+// Request объединяет предметные данные одного факта входа.
 // Само объявление структуры не обеспечивает проверку контракта.
-type Event struct {
+type Request struct {
 	EventID    uuid.UUID
 	ScenarioID uuid.UUID
 	OccurredAt time.Time
 	Source     Source
-	Type       EventType
-	// Mode содержит вариант входа; nil означает его отсутствие.
-	Mode *OAuthMode
+	Type       Type
+	// AuthMode содержит вариант входа; nil означает его отсутствие.
+	AuthMode *OAuthMode
 }
 
-// Clone возвращает независимое событие, включая значение необязательного Mode.
-func (e Event) Clone() Event {
-	if e.Mode != nil {
-		mode := *e.Mode
-		e.Mode = &mode
+// Clone возвращает независимое событие, включая значение необязательного AuthMode.
+func (e Request) Clone() Request {
+	if e.AuthMode != nil {
+		mode := *e.AuthMode
+		e.AuthMode = &mode
 	}
 	return e
 }

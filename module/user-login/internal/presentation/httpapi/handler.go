@@ -10,7 +10,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
 // Settings задаёт ограничения HTTP-адаптера без чтения внешней конфигурации.
@@ -24,7 +26,7 @@ func DefaultSettings() Settings { return Settings{MaxBodyBytes: 4096} }
 // Handler принимает события на пути /events. После создания его нельзя изменять.
 // Путь регистрируется через mux.Handle("/events", handler), без ограничения метода в mux.
 type Handler struct {
-	process      func(domain.Event) (application.ProcessResult, error)
+	process      func(dEvent.Request) (application.ProcessResult, error)
 	logger       *slog.Logger
 	maxBodyBytes int64
 }
@@ -32,7 +34,7 @@ type Handler struct {
 // NewHandler принимает готовую операцию обработки, логгер и положительный лимит тела.
 // Он не создаёт наблюдатель, хранилище или часы и не запускает сервер.
 func NewHandler(
-	process func(domain.Event) (application.ProcessResult, error),
+	process func(dEvent.Request) (application.ProcessResult, error),
 	logger *slog.Logger,
 	settings Settings,
 ) (*Handler, error) {
@@ -92,13 +94,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func processError(err error) (int, string) {
 	switch {
-	case errors.Is(err, domain.ErrInvalidEvent):
+	case errors.Is(err, dError.ErrInvalidEvent):
 		return http.StatusBadRequest, "invalid_event"
-	case errors.Is(err, domain.ErrConflict):
+	case errors.Is(err, dError.ErrConflict):
 		return http.StatusConflict, "event_conflict"
-	case errors.Is(err, domain.ErrScenarioExpired):
+	case errors.Is(err, dScenario.ErrScenarioExpired):
 		return http.StatusGone, "scenario_expired"
-	case errors.Is(err, domain.ErrCapacityExceeded):
+	case errors.Is(err, dError.ErrCapacityExceeded):
 		return http.StatusServiceUnavailable, "capacity_exceeded"
 	default:
 		return http.StatusInternalServerError, "internal_error"

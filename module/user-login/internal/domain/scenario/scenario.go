@@ -1,14 +1,13 @@
-package domain
+package scenario
 
 import (
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 )
-
-// ErrConflict означает противоречие ранее принятому факту сценария.
-var ErrConflict = errors.New("противоречие ранее принятому факту сценария")
 
 // ErrScenarioExpired означает, что новый факт не принимается после срока ожидания.
 // Это не истечение retention: удалением записи управляет вызывающая операция.
@@ -42,7 +41,7 @@ const (
 type Scenario struct {
 	id              uuid.UUID
 	startedAt       *time.Time
-	mode            *OAuthMode
+	authMode        *dEvent.OAuthMode
 	outcome         Outcome
 	succeededAt     *time.Time
 	firstReceivedAt *time.Time
@@ -50,8 +49,8 @@ type Scenario struct {
 	measurements    measurementState
 }
 
-// NewScenario создаёт сценарий с идентификатором, пока без фактов входа.
-func NewScenario(id uuid.UUID) *Scenario {
+// New создаёт сценарий с идентификатором, пока без фактов входа.
+func New(id uuid.UUID) *Scenario {
 	return &Scenario{id: id}
 }
 
@@ -60,7 +59,7 @@ func NewScenario(id uuid.UUID) *Scenario {
 func (s *Scenario) Clone() *Scenario {
 	scenario := *s
 	scenario.startedAt = cloneValue(s.startedAt)
-	scenario.mode = cloneValue(s.mode)
+	scenario.authMode = cloneValue(s.authMode)
 	scenario.succeededAt = cloneValue(s.succeededAt)
 	scenario.firstReceivedAt = cloneValue(s.firstReceivedAt)
 	scenario.closedAt = cloneValue(s.closedAt)
@@ -95,13 +94,13 @@ func (s *Scenario) Start(occurredAt, now time.Time) error {
 // Повтор подтверждает факт, другой вариант даёт ErrConflict.
 // Закрывает истёкшее ожидание; недостающий вариант после unknown даёт ErrScenarioExpired.
 // mode должен быть одним из двух вариантов контракта событий.
-func (s *Scenario) DetermineMode(mode OAuthMode, now time.Time) error {
+func (s *Scenario) DetermineMode(mode dEvent.OAuthMode, now time.Time) error {
 	if err := s.prepareFact(s.CheckMode(mode, now), now); err != nil {
 		return err
 	}
-	if s.mode == nil {
+	if s.authMode == nil {
 		s.receiveFirst(now)
-		s.mode = &mode
+		s.authMode = &mode
 	}
 	return nil
 }
@@ -138,7 +137,7 @@ func (s *Scenario) Reject(now time.Time) error {
 func (s *Scenario) CheckStart(occurredAt, now time.Time) error {
 	if s.startedAt != nil {
 		if !s.startedAt.Equal(occurredAt) {
-			return ErrConflict
+			return dError.ErrConflict
 		}
 		return nil
 	}
@@ -150,10 +149,10 @@ func (s *Scenario) CheckStart(occurredAt, now time.Time) error {
 
 // CheckMode проверяет вариант без изменений состояния; известный факт можно подтвердить
 // даже после unknown. Противоречие имеет приоритет перед истечением ожидания.
-func (s *Scenario) CheckMode(mode OAuthMode, now time.Time) error {
-	if s.mode != nil {
-		if *s.mode != mode {
-			return ErrConflict
+func (s *Scenario) CheckMode(mode dEvent.OAuthMode, now time.Time) error {
+	if s.authMode != nil {
+		if *s.authMode != mode {
+			return dError.ErrConflict
 		}
 		return nil
 	}
@@ -168,7 +167,7 @@ func (s *Scenario) CheckMode(mode OAuthMode, now time.Time) error {
 // Подтверждение исхода приложения допустимо независимо от прежнего deadline ожидания.
 func (s *Scenario) CheckOutcome(outcome Outcome, now time.Time) error {
 	if s.outcome != "" && s.outcome != OutcomeUnknown && s.outcome != outcome {
-		return ErrConflict
+		return dError.ErrConflict
 	}
 	if s.isUnknownAt(now) {
 		return ErrScenarioExpired
@@ -252,7 +251,7 @@ func (s *Scenario) receiveFirst(now time.Time) {
 // prepareFact не связывает приём факта с вместимостью: вызывающая операция сначала
 // использует чистую проверку, затем самостоятельное закрытие и проверку места.
 func (s *Scenario) prepareFact(err error, now time.Time) error {
-	if errors.Is(err, ErrConflict) {
+	if errors.Is(err, dError.ErrConflict) {
 		return err
 	}
 	s.CloseIfExpired(now)
@@ -285,12 +284,12 @@ func (s *Scenario) StartedAt() (time.Time, bool) {
 }
 
 // Mode возвращает сообщённый вариант входа и признак его наличия.
-func (s *Scenario) Mode() (OAuthMode, bool) {
-	if s.mode == nil {
+func (s *Scenario) Mode() (dEvent.OAuthMode, bool) {
+	if s.authMode == nil {
 		return "", false
 	}
 
-	return *s.mode, true
+	return *s.authMode, true
 }
 
 // Outcome возвращает окончательный исход; пустое значение означает отсутствие исхода.

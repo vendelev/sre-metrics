@@ -46,7 +46,7 @@ HTTP-вход реализован в [Handler](internal/presentation/httpapi/ha
 
 ## Устройство и запуск
 
-Контракты защищённого доступа находятся в [domain](internal/domain/store.go),
+Контракты защищённого доступа находятся в [domain](internal/domain/contract/store.go),
 порядок операций — в [application](internal/application/doc.go), хранение и одна
 общая блокировка — в [memory](internal/infrastructure/memory/store.go).
 Время операции берётся внутри защищённого участка из явно переданных часов;

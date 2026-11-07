@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
@@ -57,7 +57,7 @@ type service struct {
 }
 
 // newService только собирает объекты: listener и фоновые задачи запускает start.
-func newService(cfg config.Config, logger *slog.Logger, clock domain.Clock) (*service, error) {
+func newService(cfg config.Config, logger *slog.Logger, clock contract.Clock) (*service, error) {
 	recorder, err := otel.Prepare(otel.ResourceSettings{NodeName: cfg.NodeName, Environment: cfg.Environment})
 	if err != nil {
 		return nil, err

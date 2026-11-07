@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
@@ -25,7 +27,13 @@ func TestHandlerDomainResults(t *testing.T) {
 		bodies := []string{
 			strings.Replace(startedBody(), wireTime, "2026-11-02T12:00:01.000Z", 1),
 			strings.Replace(startedBody(), scenarioID.String(), "019aabcd-0000-7000-8000-000000000200", 1),
-			eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_started", "mis", "2026-11-02T12:00:01.000Z", ""),
+			eventBody(
+				uuid.MustParse("019aabcd-0000-7000-8000-000000000002"),
+				"login_started",
+				"mis",
+				"2026-11-02T12:00:01.000Z",
+				"",
+			),
 		}
 		for _, body := range bodies {
 			post(t, f, body, 409, "event_conflict")
@@ -60,7 +68,7 @@ func TestHandlerDomainResults(t *testing.T) {
 			)
 		}
 		snapshot := capture(t, f)
-		if snapshot.aggregates.Completed[domain.OutcomeUnknown] != 1 || len(snapshot.events) != 1 {
+		if snapshot.aggregates.Completed[scenario.OutcomeUnknown] != 1 || len(snapshot.events) != 1 {
 			t.Fatalf("expiry не сохранён однократно или сохранено отклонённое событие: %+v", snapshot)
 		}
 	})
@@ -86,7 +94,7 @@ func TestHandlerDomainResults(t *testing.T) {
 		)
 		post(t, f, body, 503, "capacity_exceeded")
 		after := capture(t, f)
-		if after.aggregates.Completed[domain.OutcomeUnknown] != 1 || len(after.events) != 32 {
+		if after.aggregates.Completed[scenario.OutcomeUnknown] != 1 || len(after.events) != 32 {
 			t.Fatal("expiry при 503 не сохранён либо принят новый ID")
 		}
 		post(t, f, body, 503, "capacity_exceeded")
@@ -144,7 +152,13 @@ func TestHandlerRetentionAndOldDuplicate(t *testing.T) {
 			post(
 				t,
 				f,
-				eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_succeeded", "mis", wireTime, ""),
+				eventBody(
+					uuid.MustParse("019aabcd-0000-7000-8000-000000000002"),
+					"login_succeeded",
+					"mis",
+					wireTime,
+					"",
+				),
 				204,
 				"",
 			)
@@ -167,8 +181,8 @@ func TestHandlerRetentionAndOldDuplicate(t *testing.T) {
 			if delta < 15*time.Minute {
 				wantCount, wantEvents = 1, 3
 			}
-			if a.aggregates.Completed[domain.OutcomeSuccess] != 1 ||
-				a.aggregates.Durations[domain.LoginModeCredentials].Count != wantCount || len(a.events) != wantEvents {
+			if a.aggregates.Completed[scenario.OutcomeSuccess] != 1 ||
+				a.aggregates.Durations[event.LoginModeCredentials].Count != wantCount || len(a.events) != wantEvents {
 				t.Fatalf("неверная граница retention: %+v", a)
 			}
 		})
@@ -193,7 +207,7 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
 			logHandler := &snapshotLogHandler{
 				Handler:    slog.NewJSONHandler(&f.logs, nil),
-				checkStore: func() error { return f.store.Within(func(domain.State) error { return nil }) },
+				checkStore: func() error { return f.store.Within(func(contract.State) error { return nil }) },
 			}
 			var err error
 			f.handler, err = httpapi.NewHandler(f.observer.Process, slog.New(logHandler), httpapi.DefaultSettings())
@@ -251,8 +265,8 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 				}
 			}
 			before := capture(t, f)
-			if before.aggregates.Completed[domain.OutcomeSuccess] != 1 ||
-				before.aggregates.Durations[domain.LoginModeCredentials].Count != 0 {
+			if before.aggregates.Completed[scenario.OutcomeSuccess] != 1 ||
+				before.aggregates.Durations[event.LoginModeCredentials].Count != 0 {
 				t.Fatal("диагностика изменила учёт успеха или длительности")
 			}
 			logBefore := f.logs.String()
