@@ -3,7 +3,7 @@ info:
   title: MIS Login Observability Events API
   version: 1.0.0
   description: |
-    Контракт событий без поля версии. Редакция комплекта спецификации — 0.29, согласовано.
+    Контракт событий без поля версии. Редакция комплекта спецификации — 0.30, согласовано.
     API измеряет сценарии, но не управляет авторизацией. Каждое событие отправляется
     синхронно один раз с общим timeout 1 секунда; ошибки не прерывают вход.
     Хранение только в памяти, 204 не гарантирует сохранность после перезапуска
@@ -15,7 +15,7 @@ info:
     Retention закрытой записи — логическая граница: при now_Go >= времени закрытия Go
     + 15 минут запись и её event_id атомарно считаются удалёнными до дедупликации
     и проверки фактов, независимо от фоновой очистки (BR-56). Агрегаты сохраняются.
-x-contract-revision: '0.29'
+x-contract-revision: '0.30'
 x-contract-status: agreed
 x-open-decisions: []
 security: []
@@ -33,17 +33,17 @@ paths:
         не удостоверенная идентичность. Путь не публикуется на хост или через Traefik.
         Методы, отличные от POST, получают 405 с Allow: POST.
 
-        Порядок: метод, Content-Type, размер тела, JSON/схема, логическое истечение
+        Порядок: метод, Content-Type, JSON/схема, логическое истечение
         хранения закрытых записей, сохранённый event_id,
         возраст нового события, факты/состояние, вместимость, приём.
         Детальная таблица и самостоятельное закрытие по expiry — в разделе 5 спецификации.
-        Один JSON-объект; разбор соответствует encoding/json.Unmarshal в Go.
+        Один JSON-объект; разбор через encoding/json.Decoder в Go с проверкой конца тела.
         Неизвестные поля игнорируются, имена полей сопоставляются без учёта регистра.
         При повторении строкового поля используется последнее значение.
         Схемы ниже описывают обычную запись полей; регистр и повтор ключей проверяются HTTP-тестами.
         MIME-тип application/json допускает параметры, например charset=utf-8.
-        Начальный настраиваемый лимит тела — 4096 байт, включая JSON-пробелы.
-        Это ограничение HTTP, а не maxLength строкового поля JSON Schema.
+        Размер тела на уровне приложения не ограничивается: сервис принимает события
+        от доверенных внутренних отправителей. Ошибки JSON и схемы дают 400 независимо от размера.
 
         Для нового event_id допустим now_Go - 30 минут <= occurred_at <= now_Go + 30 секунд.
         Для сохранённого event_id после структурных проверок сначала определяется
@@ -56,7 +56,6 @@ paths:
         в проверках, даже если запись физически ещё не удалена. Событие проверяется
         как новое, включая возраст; истёкшие закрытые записи не занимают общий лимит.
         Истечение хранения не меняет агрегаты и не отменяется последующим отказом событию.
-      x-default-max-body-bytes: 4096
       requestBody:
         required: true
         content:
@@ -127,8 +126,6 @@ paths:
           $ref: '#/components/responses/EventConflict'
         '410':
           $ref: '#/components/responses/ScenarioExpired'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
         '500':
@@ -285,7 +282,6 @@ components:
             - method_not_allowed
             - event_conflict
             - scenario_expired
-            - payload_too_large
             - unsupported_media_type
             - internal_error
             - capacity_exceeded
@@ -346,18 +342,6 @@ components:
                     const: scenario_expired
           example:
             error: scenario_expired
-    PayloadTooLarge:
-      description: Превышен настраиваемый лимит HTTP-тела, первоначально 4096 байт.
-      content:
-        application/json:
-          schema:
-            allOf:
-              - $ref: '#/components/schemas/Error'
-              - properties:
-                  error:
-                    const: payload_too_large
-          example:
-            error: payload_too_large
     UnsupportedMediaType:
       description: Content-Type отсутствует, невалиден или не application/json.
       content:

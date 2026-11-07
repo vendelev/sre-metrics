@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,10 +19,15 @@ type rawEvent struct {
 	Mode       *string `json:"mode"`
 }
 
-func decodeEvent(body []byte) (dEvent.Request, error) {
+func decodeEvent(body io.Reader) (dEvent.Request, error) {
+	decoder := json.NewDecoder(body)
 	var request rawEvent
-	if err := json.Unmarshal(body, &request); err != nil {
+	if err := decoder.Decode(&request); err != nil {
 		return dEvent.Request{}, err
+	}
+	// В теле допускается только один JSON-объект и пробелы после него.
+	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
+		return dEvent.Request{}, errors.New("после события ожидается конец тела")
 	}
 
 	eventID, err := uuid.Parse(request.EventID)

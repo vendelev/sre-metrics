@@ -72,18 +72,20 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 	if err != nil {
 		return nil, err
 	}
-	handler, err := httpapi.NewHandler(observer.Process, logger.With("component", "http"),
-		httpapi.Settings{MaxBodyBytes: cfg.MaxBodyBytes})
+	handler, err := httpapi.NewHandler(observer.Process, logger.With("component", "http"))
 	if err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/events", handler)
 	server := &http.Server{
-		Addr: cfg.ListenAddr, Handler: mux,
-		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout, ReadTimeout: cfg.HTTPReadTimeout,
-		WriteTimeout: cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
-		ErrorLog: slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError),
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+		ErrorLog:          slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError),
 	}
 	// Сервис сохраняет собственный снимок, а не изменяемую конфигурацию вызывающего кода.
 	return &service{server: server, observer: observer, recorder: recorder, cfg: *cfg, logger: logger}, nil

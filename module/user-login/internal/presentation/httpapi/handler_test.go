@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -62,7 +61,7 @@ func newFixture(t *testing.T, limits memory.Limits) *fixture {
 	f.handler, err = httpapi.NewHandler(func(event *event.Request) (application.ProcessResult, error) {
 		f.calls++
 		return f.observer.Process(event)
-	}, slog.New(slog.NewJSONHandler(&f.logs, nil)), httpapi.DefaultSettings())
+	}, slog.New(slog.NewJSONHandler(&f.logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +91,6 @@ func TestHandlerErrorLogging(t *testing.T) {
 					return application.ProcessResult{}, tt.err
 				},
 				logger,
-				httpapi.DefaultSettings(),
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -180,30 +178,24 @@ func TestNewHandler(t *testing.T) {
 	process := func(*event.Request) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
 	logger := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
-		name     string
-		process  func(*event.Request) (application.ProcessResult, error)
-		logger   *slog.Logger
-		settings httpapi.Settings
+		name    string
+		process func(*event.Request) (application.ProcessResult, error)
+		logger  *slog.Logger
 	}{
-		{"нет операции", nil, logger, httpapi.DefaultSettings()},
-		{"нет логгера", process, nil, httpapi.DefaultSettings()},
-		{"нулевой лимит", process, logger, httpapi.Settings{}},
-		{"отрицательный лимит", process, logger, httpapi.Settings{MaxBodyBytes: -1}},
+		{"нет операции", nil, logger},
+		{"нет логгера", process, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := httpapi.NewHandler(tc.process, tc.logger, tc.settings); err == nil {
-				t.Fatal("невалидная зависимость или настройка принята")
+			if _, err := httpapi.NewHandler(tc.process, tc.logger); err == nil {
+				t.Fatal("невалидная зависимость принята")
 			}
 		})
 	}
-	if httpapi.DefaultSettings().MaxBodyBytes != 4096 {
-		t.Fatal("начальный лимит отличается от BR-36")
-	}
-	h, err := httpapi.NewHandler(process, logger, httpapi.Settings{MaxBodyBytes: 2})
+	h, err := httpapi.NewHandler(process, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertResponse(t, request(h, "POST", "application/json", "{} "), 413, "payload_too_large")
+	assertResponse(t, request(h, "POST", "application/json", startedBody()), 204, "")
 }
 
 func TestHandlerAcceptsEventTypes(t *testing.T) {
@@ -369,7 +361,7 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 	for _, mediaType := range []string{"", "text/plain", "application/jsonx", "application/problem+json", "application/json; charset", "application/json; charset=utf-8; charset=ascii"} {
 		t.Run("отказ MIME/"+mediaType, func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
-			// Невалидный JSON сверх лимита не должен опередить MIME.
+			// Невалидный JSON не должен опередить MIME.
 			assertResponse(
 				t,
 				request(f.handler, "POST", mediaType, strings.Repeat("!", 4097)),
@@ -389,27 +381,9 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 	}
 }
 
-type countingReader struct {
-	remaining int
-	read      int
-}
-
-func (r *countingReader) Read(p []byte) (int, error) {
-	if r.remaining == 0 {
-		return 0, io.EOF
-	}
-	n := min(len(p), r.remaining)
-	for i := range p[:n] {
-		p[i] = '!'
-	}
-	r.remaining -= n
-	r.read += n
-	return n, nil
-}
-
-func TestHandlerBodyLimit(t *testing.T) {
+func TestHandlerLargeBody(t *testing.T) {
 	for _, unknownLength := range []bool{false, true} {
-		for _, size := range []int{4096, 4097} {
+		for _, size := range []int{4097, 65536} {
 			t.Run(fmt.Sprintf("байт=%d/неизвестная длина=%t", size, unknownLength), func(t *testing.T) {
 				f := newFixture(t, memory.DefaultLimits())
 				body := startedBody() + strings.Repeat(" ", size-len(startedBody()))
@@ -420,40 +394,18 @@ func TestHandlerBodyLimit(t *testing.T) {
 				}
 				w := httptest.NewRecorder()
 				f.handler.ServeHTTP(w, r)
-				if size == 4096 {
-					assertResponse(t, w, 204, "")
-				} else {
-					assertResponse(t, w, 413, "payload_too_large")
-					if f.calls != 0 || len(capture(t, f).scenarios) != 0 {
-						t.Fatal("превышение изменило состояние")
-					}
+				assertResponse(t, w, 204, "")
+				if f.calls != 1 || len(capture(t, f).scenarios) != 1 {
+					t.Fatal("большое тело не обработано")
 				}
 			})
 		}
 	}
-	for _, body := range []string{
-		strings.Repeat("!", 4097), startedBody() + strings.Repeat("!", 4097),
-		startedBody() + `{}` + strings.Repeat(" ", 4097),
-		// Размер считается в байтах, хотя число Unicode-символов меньше лимита.
-		`{"type":"` + strings.Repeat("я", 2048) + `"}`,
-	} {
-		f := newFixture(t, memory.DefaultLimits())
-		post(t, f, body, 413, "payload_too_large")
-		if f.calls != 0 {
-			t.Fatal("превышение после объекта вызвало Process")
-		}
-	}
-	f := newFixture(t, memory.DefaultLimits())
-	reader := &countingReader{remaining: 1_000_000}
-	r := httptest.NewRequest("POST", "/events", reader)
-	r.Header.Set("Content-Type", "application/json")
-	r.ContentLength = 1 // Недостоверный заголовок не заменяет проверку фактических байтов.
-	w := httptest.NewRecorder()
-	f.handler.ServeHTTP(w, r)
-	assertResponse(t, w, 413, "payload_too_large")
-	if reader.read != 4097 {
-		t.Fatalf("прочитано %d байт вместо ограниченных 4097", reader.read)
-	}
+	assertStructuralRejections(t, []struct{ name, body string }{
+		{"большой невалидный JSON", strings.Repeat("!", 65536)},
+		{"большой хвост", startedBody() + strings.Repeat("!", 65536)},
+		{"второй объект после пробелов", startedBody() + strings.Repeat(" ", 65536) + `{}`},
+	})
 }
 
 type failedReader struct{}
@@ -496,7 +448,7 @@ func TestHandlerProcessErrors(t *testing.T) {
 				}
 				h, createErr := httpapi.NewHandler(func(*event.Request) (application.ProcessResult, error) {
 					return application.ProcessResult{}, err
-				}, slog.New(slog.DiscardHandler), httpapi.DefaultSettings())
+				}, slog.New(slog.DiscardHandler))
 				if createErr != nil {
 					t.Fatal(createErr)
 				}
@@ -518,7 +470,7 @@ func TestHandlerUnexpectedStoreError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := httpapi.NewHandler(o.Process, slog.New(slog.DiscardHandler), httpapi.DefaultSettings())
+	h, err := httpapi.NewHandler(o.Process, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

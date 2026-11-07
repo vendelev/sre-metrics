@@ -399,7 +399,7 @@ func TestPipelineTimeoutAndHTTPIndependence(t *testing.T) {
 		done <- p.Recorder.provider.ForceFlush(ctx)
 	}()
 	receive(t, entered)
-	handler, err := httpapi.NewHandler(o.Process, testLogger(), httpapi.DefaultSettings())
+	handler, err := httpapi.NewHandler(o.Process, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

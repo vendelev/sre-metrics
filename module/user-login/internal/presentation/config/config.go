@@ -16,7 +16,6 @@ import (
 // проверяется при создании адаптера, чтобы прямой конструктор не обходил политику.
 type Config struct {
 	ListenAddr            string
-	MaxBodyBytes          int64
 	MaxScenarios          int
 	MaxEventsPerScenario  int
 	MaintenanceInterval   time.Duration
@@ -35,7 +34,7 @@ type Config struct {
 // Default возвращает начальные лимиты контракта и согласованные настройки запуска.
 func Default() Config {
 	return Config{
-		ListenAddr: ":8080", MaxBodyBytes: 4096,
+		ListenAddr:   ":8080",
 		MaxScenarios: 10_000, MaxEventsPerScenario: 32,
 		MaintenanceInterval: time.Second, HTTPReadHeaderTimeout: time.Second,
 		HTTPReadTimeout: 2 * time.Second, HTTPWriteTimeout: 2 * time.Second,
@@ -68,13 +67,6 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("USER_AUTH_LISTEN_ADDR"); ok {
 		cfg.ListenAddr = value
-	}
-	if value, ok := lookup("USER_AUTH_MAX_BODY_BYTES"); ok {
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return Config{}, fmt.Errorf("USER_AUTH_MAX_BODY_BYTES: требуется целое десятичное число в диапазоне int64")
-		}
-		cfg.MaxBodyBytes = parsed
 	}
 	for _, setting := range []struct {
 		name   string
@@ -136,7 +128,6 @@ func (c *Config) Validate() error {
 		name  string
 		value int64
 	}{
-		{"USER_AUTH_MAX_BODY_BYTES", c.MaxBodyBytes},
 		{"USER_AUTH_MAX_SCENARIOS", int64(c.MaxScenarios)},
 		{"USER_AUTH_MAX_EVENTS_PER_SCENARIO", int64(c.MaxEventsPerScenario)},
 		{"USER_AUTH_MAINTENANCE_INTERVAL", int64(c.MaintenanceInterval)},

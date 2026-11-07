@@ -8,7 +8,6 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
 
 func source(values map[string]string) func(string) (string, bool) {
@@ -37,7 +36,7 @@ func validDefault() config.Config {
 func TestLoadDefaults(t *testing.T) {
 	t.Parallel()
 	want := config.Config{
-		ListenAddr: ":8080", MaxBodyBytes: 4096,
+		ListenAddr:   ":8080",
 		MaxScenarios: 10_000, MaxEventsPerScenario: 32,
 		MaintenanceInterval: time.Second, HTTPReadHeaderTimeout: time.Second,
 		HTTPReadTimeout: 2 * time.Second, HTTPWriteTimeout: 2 * time.Second,
@@ -50,8 +49,7 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("умолчания: получено %+v, ожидалось %+v, ошибка %v", got, want, err)
 	}
 	limits := memory.DefaultLimits()
-	if want.MaxBodyBytes != httpapi.DefaultSettings().MaxBodyBytes ||
-		want.MaxScenarios != limits.MaxScenarios || want.MaxEventsPerScenario != limits.MaxEventsPerScenario {
+	if want.MaxScenarios != limits.MaxScenarios || want.MaxEventsPerScenario != limits.MaxEventsPerScenario {
 		t.Fatal("начальные лимиты конфигурации расходятся с существующими компонентами")
 	}
 }
@@ -59,7 +57,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadOverrides(t *testing.T) {
 	t.Parallel()
 	values := map[string]string{
-		"USER_AUTH_LISTEN_ADDR": "127.0.0.1:0", "USER_AUTH_MAX_BODY_BYTES": "8192",
+		"USER_AUTH_LISTEN_ADDR":   "127.0.0.1:0",
 		"USER_AUTH_MAX_SCENARIOS": "20000", "USER_AUTH_MAX_EVENTS_PER_SCENARIO": "64",
 		"USER_AUTH_MAINTENANCE_INTERVAL": "500ms", "USER_AUTH_HTTP_READ_HEADER_TIMEOUT": "750ms",
 		"USER_AUTH_HTTP_READ_TIMEOUT": "3s", "USER_AUTH_HTTP_WRITE_TIMEOUT": "4s",
@@ -69,7 +67,7 @@ func TestLoadOverrides(t *testing.T) {
 		"USER_AUTH_ENVIRONMENT": "development", "USER_AUTH_OTLP_METRICS_ENDPOINT": "https://receiver/v1/metrics",
 	}
 	want := config.Config{
-		ListenAddr: "127.0.0.1:0", MaxBodyBytes: 8192,
+		ListenAddr:   "127.0.0.1:0",
 		MaxScenarios: 20_000, MaxEventsPerScenario: 64,
 		MaintenanceInterval: 500 * time.Millisecond, HTTPReadHeaderTimeout: 750 * time.Millisecond,
 		HTTPReadTimeout: 3 * time.Second, HTTPWriteTimeout: 4 * time.Second,
@@ -92,9 +90,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 	for _, tc := range []struct {
 		name, env, value string
 	}{
-		{"пустое значение", "USER_AUTH_MAX_BODY_BYTES", ""},
+		{"пустое значение", "USER_AUTH_MAX_SCENARIOS", ""},
 		{"формат целого", "USER_AUTH_MAX_SCENARIOS", "много"},
-		{"нулевой лимит", "USER_AUTH_MAX_BODY_BYTES", "0"},
+		{"нулевой лимит", "USER_AUTH_MAX_SCENARIOS", "0"},
 		{"отрицательный лимит", "USER_AUTH_MAX_EVENTS_PER_SCENARIO", "-1"},
 		{"формат длительности", "USER_AUTH_HTTP_READ_TIMEOUT", "2"},
 		{"нулевой timeout", "USER_AUTH_HTTP_IDLE_TIMEOUT", "0s"},

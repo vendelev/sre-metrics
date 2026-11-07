@@ -3,7 +3,6 @@ package httpapi
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -15,37 +14,24 @@ import (
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
-// Settings задаёт ограничения HTTP-адаптера без чтения внешней конфигурации.
-type Settings struct {
-	MaxBodyBytes int64
-}
-
-// DefaultSettings возвращает начальный лимит тела по BR-36.
-func DefaultSettings() Settings { return Settings{MaxBodyBytes: 4096} }
-
 // Handler принимает события на пути /events. После создания его нельзя изменять.
 // Путь регистрируется через mux.Handle("/events", handler), без ограничения метода в mux.
 type Handler struct {
-	process      func(*dEvent.Request) (application.ProcessResult, error)
-	logger       *slog.Logger
-	maxBodyBytes int64
+	process func(*dEvent.Request) (application.ProcessResult, error)
+	logger  *slog.Logger
 }
 
-// NewHandler принимает готовую операцию обработки, логгер и положительный лимит тела.
+// NewHandler принимает готовую операцию обработки и логгер.
 // Он не создаёт наблюдатель, хранилище или часы и не запускает сервер.
 // Операция вызывается синхронно и не должна изменять или удерживать переданное событие.
 func NewHandler(
 	process func(*dEvent.Request) (application.ProcessResult, error),
 	logger *slog.Logger,
-	settings Settings,
 ) (*Handler, error) {
 	if process == nil || logger == nil {
 		return nil, errors.New("для HTTP-адаптера необходимы операция обработки и логгер")
 	}
-	if settings.MaxBodyBytes <= 0 {
-		return nil, errors.New("лимит HTTP-тела должен быть положительным")
-	}
-	return &Handler{process: process, logger: logger, maxBodyBytes: settings.MaxBodyBytes}, nil
+	return &Handler{process: process, logger: logger}, nil
 }
 
 // ServeHTTP проверяет транспортный контракт до обращения к состоянию приложения.
@@ -61,18 +47,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type")
 		return
 	}
-	// Читаем всё ограниченное тело до JSON: превышение даже после объекта важнее синтаксиса.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBodyBytes))
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large")
-		} else {
-			writeError(w, r, http.StatusBadRequest, "invalid_event")
-		}
-		return
-	}
-	event, err := decodeEvent(body)
+	event, err := decodeEvent(r.Body)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_event")
 		return

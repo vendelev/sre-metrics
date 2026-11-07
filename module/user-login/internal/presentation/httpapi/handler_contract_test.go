@@ -216,7 +216,6 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 			f.handler, err = httpapi.NewHandler(
 				f.observer.Process,
 				slog.New(slog.NewJSONHandler(logWriter, nil)),
-				httpapi.DefaultSettings(),
 			)
 			if err != nil {
 				t.Fatal(err)

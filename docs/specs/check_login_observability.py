@@ -170,17 +170,17 @@ def main():
 
     # Schema is independent of dynamic age checks. Examples use an explicit test clock.
     encoded = json.dumps(base).encode()
-    assert len(encoded) < 4096
-    assert len(encoded + b" " * (4096 - len(encoded))) == 4096
     event_validator.validate(json.loads(encoded))
-    assert operation["x-default-max-body-bytes"] == 4096
+    assert "x-default-max-body-bytes" not in operation
+    assert "413" not in operation["responses"]
+    event_validator.validate(json.loads(encoded + b" " * 65536))
     print(f"PASS request examples and {rejected} invalid schema cases")
 
     error_count = 0
     expected_codes = {
         "400": "invalid_event", "405": "method_not_allowed",
         "409": "event_conflict", "410": "scenario_expired",
-        "413": "payload_too_large", "415": "unsupported_media_type",
+        "415": "unsupported_media_type",
         "500": "internal_error", "503": "capacity_exceeded",
     }
     assert "content" not in operation["responses"]["204"]
