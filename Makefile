@@ -1,22 +1,18 @@
-.PHONY: build test vet lint fmt image-user-login
-
-build:
-	go build -o bin/user-login ./service/user-login/cmd
-
-test:
-	go test -cover -race ./...
-
-vet:
-	go vet ./...
-
-lint:
-	golangci-lint run ./...
-
-fmt:
-	golines --base-formatter=goimports -m 120 -w .
-
-image-user-login:
-	docker build -f service/user-login/Dockerfile -t metrics-user-login:local .
+.PHONY: build test lint up down
 
 up:
 	docker compose up -d
+
+down:
+	docker compose down
+
+lint:
+	golines --base-formatter=goimports -m 120 -w ./module
+	cd module && golangci-lint run ./... --fix
+
+test:
+	cd module && golangci-lint run ./...
+	go -C module test -cover -race ./...
+
+build:
+	go -C module build -o ../bin/user-login ./user-login/cmd

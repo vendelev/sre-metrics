@@ -1,8 +1,8 @@
 FROM golang:1.27.3-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
-COPY service/user-login/ ./service/user-login/
-RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./service/user-login/cmd
+COPY module/go.mod module/go.sum ./
+COPY module/user-login/ ./user-login/
+RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./user-login/cmd
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

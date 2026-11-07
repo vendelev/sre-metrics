@@ -1,32 +1,40 @@
 name: Тесты
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+    push:
+        branches: [main]
+    pull_request:
 
 permissions:
-  contents: read
+    contents: read
 
 jobs:
-  test:
-    name: Go-тесты
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    test:
+        name: Go-тесты
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
 
-    steps:
-      - name: Загрузка исходного кода
-        uses: actions/checkout@v6
+        steps:
+            - name: Загрузка исходного кода
+              uses: actions/checkout@v6
 
-      - name: Установка Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
+            - name: Установка Go
+              uses: actions/setup-go@v6
+              with:
+                  go-version-file: module/go.mod
+                  cache-dependency-path: module/go.sum
 
-      - name: Загрузка и проверка зависимостей
-        run: |
-          go mod download
-          go mod verify
+            - name: Загрузка и проверка зависимостей
+              working-directory: module
+              run: |
+                  go mod download
+                  go mod verify
 
-      - name: Запуск тестов
-        run: make test
+            - name: Установка golangci-lint
+              uses: golangci/golangci-lint-action@v9
+              with:
+                  version: v2.15.0
+                  install-only: true
+
+            - name: Запуск тестов
+              run: make test
