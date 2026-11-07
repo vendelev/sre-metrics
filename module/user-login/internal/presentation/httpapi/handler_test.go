@@ -39,7 +39,7 @@ type fixture struct {
 	store    *memory.Store
 	observer *application.LoginObserver
 	clock    *clock
-	handler  *httpapi.Handler
+	handler  http.Handler
 	logs     bytes.Buffer
 	calls    int
 	recorder *otel.Recorder
@@ -330,28 +330,58 @@ func TestCaptureEventIndex(t *testing.T) {
 	}
 }
 
+func TestHandlerRoutes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{
+		{path: "/events", status: http.StatusNoContent},
+		{path: "/events?test=1", status: http.StatusNoContent},
+		{path: "/", status: http.StatusNotFound},
+		{path: "/other", status: http.StatusNotFound},
+		{path: "/events/", status: http.StatusNotFound},
+		{path: "/events/extra", status: http.StatusNotFound},
+		{path: "/Events", status: http.StatusNotFound},
+		{path: "//events", status: http.StatusNotFound},
+		{path: "/other/../events", status: http.StatusNotFound},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t, memory.DefaultLimits())
+			r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(startedBody()))
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			f.handler.ServeHTTP(w, r)
+			if w.Code != tc.status || w.Header().Get("Location") != "" {
+				t.Fatalf("путь %s: статус %d, заголовки %v", tc.path, w.Code, w.Header())
+			}
+			if tc.status == http.StatusNoContent {
+				assertResponse(t, w, tc.status, "")
+				if f.calls != 1 || len(capture(t, f).events) != 1 {
+					t.Fatal("маршрут не передал событие в приложение")
+				}
+			} else if f.calls != 0 || len(capture(t, f).scenarios) != 0 {
+				t.Fatal("неизвестный путь передан в приложение")
+			}
+		})
+	}
+}
+
 func TestHandlerMethodsAndMIME(t *testing.T) {
 	for _, method := range []string{"GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "OTHER"} {
 		t.Run(method, func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
-			for _, useMux := range []bool{false, true} {
-				var h http.Handler = f.handler
-				if useMux {
-					mux := http.NewServeMux()
-					mux.Handle("/events", h)
-					h = mux
+			w := request(f.handler, method, "text/plain", strings.Repeat("!", 4097))
+			if w.Header().Get("Allow") != "POST" {
+				t.Fatal("нет Allow: POST")
+			}
+			if method == "HEAD" {
+				if w.Code != 405 || w.Body.Len() != 0 || w.Header().Get("Content-Type") != "application/json" {
+					t.Fatalf("HEAD: %d %q", w.Code, w.Body.String())
 				}
-				w := request(h, method, "text/plain", strings.Repeat("!", 4097))
-				if w.Header().Get("Allow") != "POST" {
-					t.Fatal("нет Allow: POST")
-				}
-				if method == "HEAD" {
-					if w.Code != 405 || w.Body.Len() != 0 || w.Header().Get("Content-Type") != "application/json" {
-						t.Fatalf("HEAD: %d %q", w.Code, w.Body.String())
-					}
-				} else {
-					assertResponse(t, w, 405, "method_not_allowed")
-				}
+			} else {
+				assertResponse(t, w, 405, "method_not_allowed")
 			}
 			if f.calls != 0 {
 				t.Fatal("метод вызвал Process")
@@ -377,6 +407,30 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 		t.Run("приём MIME/"+mediaType, func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
 			assertResponse(t, request(f.handler, "POST", mediaType, startedBody()), 204, "")
+		})
+	}
+}
+
+func TestHandlerEmptyBody(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		mediaType string
+		status    int
+		code      string
+	}{
+		{name: "нет MIME", status: 415, code: "unsupported_media_type"},
+		{name: "другой MIME", mediaType: "text/plain", status: 415, code: "unsupported_media_type"},
+		{name: "невалидный MIME", mediaType: "application/json; charset", status: 415, code: "unsupported_media_type"},
+		{name: "валидный MIME", mediaType: "application/json", status: 400, code: "invalid_event"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t, memory.DefaultLimits())
+			assertResponse(t, request(f.handler, http.MethodPost, tc.mediaType, ""), tc.status, tc.code)
+			if f.calls != 0 {
+				t.Fatal("пустое тело передано в приложение")
+			}
 		})
 	}
 }

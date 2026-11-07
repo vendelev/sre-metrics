@@ -11,43 +11,97 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 )
 
-// Устойчивый отказ Accept одновременно с отменой нельзя надёжно воспроизвести
-// через TCP: закрытие сокета возвращает штатный net.ErrClosed. Обёртка нужна
-// только для проверки сохранения исходной ошибки внутри HTTP-фазы.
+// Произвольный отказ Accept нельзя надёжно воспроизвести через настоящий TCP.
+// Обёртка проверяет передачу ошибки, возвращённой http.Server.Serve.
 type failedAcceptListener struct {
 	net.Listener
-	err    error
-	cancel context.CancelFunc
+	err error
 }
 
 func (l failedAcceptListener) Accept() (net.Conn, error) {
-	l.cancel()
 	return nil, l.err
 }
 
-func TestHTTPFailureWithCancellation(t *testing.T) {
+func TestHTTPFailure(t *testing.T) {
 	t.Parallel()
 	r := newServiceReceiver(t)
 	app := testService(t, actualConfig(r), clock.RealTime{})
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	t.Cleanup(func() { _ = app.stop(t.Context()) })
-	if err := app.openListener(ctx); err != nil {
+	if err := app.openListener(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	cause := errors.New("управляемый отказ Accept")
-	app.listener.Listener = failedAcceptListener{Listener: app.listener.Listener, err: cause, cancel: cancel}
-	if err := app.startSDK(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.startHTTP(ctx); err != nil {
+	cause := &net.OpError{Op: "accept", Net: "tcp", Err: errors.New("управляемый отказ Accept")}
+	app.listener.Listener = failedAcceptListener{Listener: app.listener.Listener, err: cause}
+	if err := app.startHTTP(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	waitSignal(t, app.serverTask.done)
-	if err := app.stop(ctx); !errors.Is(err, cause) {
-		t.Fatalf("сбой Accept потерян при отмене: %v", err)
+	if err := app.stop(t.Context()); !errors.Is(err, cause) {
+		t.Fatalf("ошибка Serve потеряна: %v", err)
 	}
 	assertListenerClosed(t, app)
+}
+
+// closeTriggeredAcceptListener воспроизводит ошибку после начала Shutdown:
+// настоящий TCP при таком закрытии выдаёт net.ErrClosed, а не произвольный отказ.
+type closeTriggeredAcceptListener struct {
+	net.Listener
+	entered chan struct{}
+	closed  chan struct{}
+	err     error
+}
+
+func (l *closeTriggeredAcceptListener) Accept() (net.Conn, error) {
+	close(l.entered)
+	<-l.closed
+	return nil, l.err
+}
+
+func (l *closeTriggeredAcceptListener) Close() error {
+	err := l.Listener.Close()
+	close(l.closed)
+	return err
+}
+
+func TestHTTPShutdownUsesServeResult(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "окончательная сетевая ошибка скрыта остановкой",
+			cause: &net.OpError{Op: "accept", Net: "tcp", Err: errors.New("окончательный сетевой отказ")}},
+		{name: "штатное закрытие", cause: net.ErrClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testService(t, actualConfig(newServiceReceiver(t)), clock.RealTime{})
+			t.Cleanup(func() { _ = app.stop(t.Context()) })
+			if err := app.openListener(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			listener := &closeTriggeredAcceptListener{
+				Listener: app.listener.Listener,
+				entered:  make(chan struct{}), closed: make(chan struct{}), err: tc.cause,
+			}
+			app.listener.Listener = listener
+			if err := app.startHTTP(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			waitSignal(t, listener.entered)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			if err := app.server.Shutdown(ctx); err != nil {
+				t.Fatal(err)
+			}
+			waitSignal(t, app.serverTask.done)
+			// При начавшемся Shutdown Serve возвращает ErrServerClosed,
+			// даже если Accept вернул другую ошибку. Этот результат не переопределяем.
+			if err := app.stop(t.Context()); err != nil {
+				t.Fatalf("штатная остановка Serve завершилась ошибкой: %v", err)
+			}
+			assertListenerClosed(t, app)
+		})
+	}
 }
 
 type closeErrorListener struct {

@@ -76,11 +76,9 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 	if err != nil {
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/events", handler)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,

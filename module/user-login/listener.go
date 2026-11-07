@@ -13,29 +13,9 @@ import (
 // ownedListener закрывается один раз, в том числе при частично успешном запуске.
 type ownedListener struct {
 	net.Listener
-	once      sync.Once
-	err       error
-	closing   atomic.Bool
-	acceptErr error
-}
-
-func (l *ownedListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		var temporary net.Error
-		if errors.As(
-			err,
-			&temporary,
-		) { //nolint:staticcheck // SA1019: различаем повторяемые и окончательные ошибки так же, как http.Server.Serve.
-			return conn, err
-		}
-		if !l.closing.Load() || !errors.Is(err, net.ErrClosed) {
-			// Serve может заменить настоящий сбой Accept на ErrServerClosed при
-			// одновременном Shutdown. Причину хранит та же goroutine, которая читает её.
-			l.acceptErr = err
-		}
-	}
-	return conn, err
+	once    sync.Once
+	err     error
+	closing atomic.Bool
 }
 
 func (l *ownedListener) Close() error {
@@ -75,10 +55,8 @@ func (s *service) startHTTP(ctx context.Context) error {
 	}
 	s.serverTask = s.startTask(func() error {
 		err := s.server.Serve(s.listener)
-		if s.listener.acceptErr != nil {
-			err = s.listener.acceptErr
-		} else if s.listener.closing.Load() && (errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)) {
-			err = nil
+		if s.listener.closing.Load() && (errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)) {
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("работа HTTP user-login: %w", err)

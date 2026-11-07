@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
@@ -14,58 +15,48 @@ import (
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
-// Handler принимает события на пути /events. После создания его нельзя изменять.
-// Путь регистрируется через mux.Handle("/events", handler), без ограничения метода в mux.
-type Handler struct {
-	process func(*dEvent.Request) (application.ProcessResult, error)
-	logger  *slog.Logger
-}
-
-// NewHandler принимает готовую операцию обработки и логгер.
+// NewHandler создаёт роутер chi с POST /events и согласованными HTTP-ответами.
 // Он не создаёт наблюдатель, хранилище или часы и не запускает сервер.
 // Операция вызывается синхронно и не должна изменять или удерживать переданное событие.
 func NewHandler(
 	process func(*dEvent.Request) (application.ProcessResult, error),
 	logger *slog.Logger,
-) (*Handler, error) {
+) (http.Handler, error) {
 	if process == nil || logger == nil {
 		return nil, errors.New("для HTTP-адаптера необходимы операция обработки и логгер")
 	}
-	return &Handler{process: process, logger: logger}, nil
-}
-
-// ServeHTTP проверяет транспортный контракт до обращения к состоянию приложения.
-// Маршрутизация неизвестных путей остаётся ответственностью вызывающего кода.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	router := chi.NewRouter()
+	router.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", http.MethodPost)
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed")
-		return
-	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type")
-		return
-	}
-	event, err := decodeEvent(r.Body)
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_event")
-		return
-	}
-	result, err := h.process(&event)
-	if err != nil {
-		status, code := processError(err)
-		if status == http.StatusInternalServerError {
-			h.logger.ErrorContext(r.Context(), "не удалось обработать событие", slog.Any("error", err))
+	})
+	router.Post("/events", func(w http.ResponseWriter, r *http.Request) {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type")
+			return
 		}
-		writeError(w, r, status, code)
-		return
-	}
-	if result.NegativeDurationScenarioID != uuid.Nil {
-		h.logger.WarnContext(r.Context(), "исходный момент успеха раньше начала: длительность не учитывается",
-			slog.String("scenario_id", result.NegativeDurationScenarioID.String()))
-	}
-	w.WriteHeader(http.StatusNoContent)
+		event, err := decodeEvent(r.Body)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_event")
+			return
+		}
+		result, err := process(&event)
+		if err != nil {
+			status, code := processError(err)
+			if status == http.StatusInternalServerError {
+				logger.ErrorContext(r.Context(), "не удалось обработать событие", slog.Any("error", err))
+			}
+			writeError(w, r, status, code)
+			return
+		}
+		if result.NegativeDurationScenarioID != uuid.Nil {
+			logger.WarnContext(r.Context(), "исходный момент успеха раньше начала: длительность не учитывается",
+				slog.String("scenario_id", result.NegativeDurationScenarioID.String()))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return router, nil
 }
 
 func processError(err error) (int, string) {
