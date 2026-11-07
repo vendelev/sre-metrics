@@ -12,7 +12,11 @@ import (
 )
 
 // Process обрабатывает предметное событие после транспортной валидации.
-func (o *LoginObserver) Process(event dEvent.Request) (ProcessResult, error) {
+// Событие и его AuthMode нельзя изменять до возврата; после возврата они не удерживаются.
+func (o *LoginObserver) Process(event *dEvent.Request) (ProcessResult, error) {
+	if event == nil {
+		return ProcessResult{}, fmt.Errorf("отсутствует событие: %w", dError.ErrInvalidEvent)
+	}
 	var result ProcessResult
 	err := o.store.Within(func(state dContract.State) error {
 		now := o.clock.Now()
@@ -23,7 +27,7 @@ func (o *LoginObserver) Process(event dEvent.Request) (ProcessResult, error) {
 	return result, operationError("обработка события", err)
 }
 
-func equalEvents(a, b dEvent.Request) bool {
+func equalEvents(a *dEvent.Request, b *dEvent.Request) bool {
 	sameIDs := a.EventID == b.EventID && a.ScenarioID == b.ScenarioID
 	sameFact := a.Source == b.Source && a.Type == b.Type && a.OccurredAt.Equal(b.OccurredAt)
 	if !sameIDs || !sameFact {
@@ -35,12 +39,12 @@ func equalEvents(a, b dEvent.Request) bool {
 	return *a.AuthMode == *b.AuthMode
 }
 
-func processEvent(state dContract.State, event dEvent.Request, now time.Time) (ProcessResult, error) {
+func processEvent(state dContract.State, event *dEvent.Request, now time.Time) (ProcessResult, error) {
 	if err := removeRetained(state, now); err != nil {
 		return ProcessResult{}, err
 	}
 	if stored, ok := state.FindEvent(event.EventID); ok {
-		if equalEvents(stored, event) {
+		if equalEvents(&stored, event) {
 			return ProcessResult{}, nil
 		}
 		return ProcessResult{}, dError.ErrConflict
@@ -72,7 +76,7 @@ func processEvent(state dContract.State, event dEvent.Request, now time.Time) (P
 		return ProcessResult{}, internalError("приём проверенного факта", err)
 	}
 	measurements := loginScenario.TakeMeasurements()
-	if err := state.Commit(loginScenario, &event, measurements); err != nil {
+	if err := state.Commit(loginScenario, event, measurements); err != nil {
 		return ProcessResult{}, err
 	}
 	if !hadNegativeDuration && loginScenario.HasNegativeDuration() {
@@ -81,7 +85,7 @@ func processEvent(state dContract.State, event dEvent.Request, now time.Time) (P
 	return ProcessResult{}, nil
 }
 
-func checkFact(loginScenario *dScenario.Scenario, event dEvent.Request, now time.Time) error {
+func checkFact(loginScenario *dScenario.Scenario, event *dEvent.Request, now time.Time) error {
 	switch event.Type {
 	case dEvent.LoginStarted:
 		return loginScenario.CheckStart(event.OccurredAt, now)
@@ -98,7 +102,7 @@ func checkFact(loginScenario *dScenario.Scenario, event dEvent.Request, now time
 	}
 }
 
-func acceptFact(scenario *dScenario.Scenario, event dEvent.Request, now time.Time) error {
+func acceptFact(scenario *dScenario.Scenario, event *dEvent.Request, now time.Time) error {
 	switch event.Type {
 	case dEvent.LoginStarted:
 		return scenario.Start(event.OccurredAt, now)

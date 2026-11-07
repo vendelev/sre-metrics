@@ -1,4 +1,4 @@
-.PHONY: build test vet lint fmt up down
+.PHONY: build test lint up down
 
 up:
 	docker compose up -d
@@ -6,16 +6,12 @@ up:
 down:
 	docker compose down
 
-vet:
-	go -C module vet ./...
-
 lint:
-	cd module && golangci-lint run ./...
-
-fmt:
 	golines --base-formatter=goimports -m 120 -w ./module
+	cd module && golangci-lint run ./... --fix
 
-test: fmt lint vet
+test:
+	cd module && golangci-lint run ./...
 	go -C module test -cover -race ./...
 
 build:

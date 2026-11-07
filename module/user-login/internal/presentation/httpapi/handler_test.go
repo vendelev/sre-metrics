@@ -59,7 +59,7 @@ func newFixture(t *testing.T, limits memory.Limits) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.handler, err = httpapi.NewHandler(func(event event.Request) (application.ProcessResult, error) {
+	f.handler, err = httpapi.NewHandler(func(event *event.Request) (application.ProcessResult, error) {
 		f.calls++
 		return f.observer.Process(event)
 	}, slog.New(slog.NewJSONHandler(&f.logs, nil)), httpapi.DefaultSettings())
@@ -88,7 +88,7 @@ func TestHandlerErrorLogging(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil)).With("service", "user-login", "component", "http")
 			handler, err := httpapi.NewHandler(
-				func(event.Request) (application.ProcessResult, error) {
+				func(*event.Request) (application.ProcessResult, error) {
 					return application.ProcessResult{}, tt.err
 				},
 				logger,
@@ -177,11 +177,11 @@ func post(t *testing.T, f *fixture, body string, status int, code string) {
 }
 
 func TestNewHandler(t *testing.T) {
-	process := func(event.Request) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	process := func(*event.Request) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
+	logger := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
 		name     string
-		process  func(event.Request) (application.ProcessResult, error)
+		process  func(*event.Request) (application.ProcessResult, error)
 		logger   *slog.Logger
 		settings httpapi.Settings
 	}{
@@ -320,7 +320,7 @@ func TestCaptureEventIndex(t *testing.T) {
 		Source:     event.SourceMIS,
 		Type:       event.LoginStarted,
 	}
-	if _, err := f.observer.Process(event); err != nil {
+	if _, err := f.observer.Process(&event); err != nil {
 		t.Fatal(err)
 	}
 	before := capture(t, f)
@@ -494,9 +494,9 @@ func TestHandlerProcessErrors(t *testing.T) {
 				if wrapped {
 					err = fmt.Errorf("контекст с секретом: %w", err)
 				}
-				h, createErr := httpapi.NewHandler(func(event.Request) (application.ProcessResult, error) {
+				h, createErr := httpapi.NewHandler(func(*event.Request) (application.ProcessResult, error) {
 					return application.ProcessResult{}, err
-				}, slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.DefaultSettings())
+				}, slog.New(slog.DiscardHandler), httpapi.DefaultSettings())
 				if createErr != nil {
 					t.Fatal(createErr)
 				}
@@ -518,7 +518,7 @@ func TestHandlerUnexpectedStoreError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := httpapi.NewHandler(o.Process, slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.DefaultSettings())
+	h, err := httpapi.NewHandler(o.Process, slog.New(slog.DiscardHandler), httpapi.DefaultSettings())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -53,8 +53,19 @@ func TestUnexpectedStoreError(t *testing.T) {
 	}
 }
 
-func validEvent() event.Request {
-	return event.Request{
+func TestProcessRequiresEvent(t *testing.T) {
+	o, err := NewLoginObserver(failingStore{err: dError.ErrInternal}, fixedClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := o.Process(nil)
+	if !errors.Is(err, dError.ErrInvalidEvent) || result != (ProcessResult{}) {
+		t.Fatalf("отсутствующее событие не отклонено до обращения к хранилищу: %+v, %v", result, err)
+	}
+}
+
+func validEvent() *event.Request {
+	return &event.Request{
 		EventID:    uuid.MustParse("019aabcd-0000-7000-8000-000000000001"),
 		ScenarioID: uuid.MustParse("019aabcd-0000-7000-8000-000000000100"),
 		OccurredAt: time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC),

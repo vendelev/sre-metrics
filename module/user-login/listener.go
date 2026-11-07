@@ -22,8 +22,11 @@ type ownedListener struct {
 func (l *ownedListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
-		if temporary, ok := err.(net.Error); ok &&
-			temporary.Temporary() { //nolint:staticcheck // SA1019: различаем повторяемые и окончательные ошибки так же, как http.Server.Serve.
+		var temporary net.Error
+		if errors.As(
+			err,
+			&temporary,
+		) { //nolint:staticcheck // SA1019: различаем повторяемые и окончательные ошибки так же, как http.Server.Serve.
 			return conn, err
 		}
 		if !l.closing.Load() || !errors.Is(err, net.ErrClosed) {

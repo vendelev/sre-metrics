@@ -209,4 +209,5 @@ HTTP Shutdown нет. `Pipeline.Shutdown` передаётся оставшее�
   фактические Prometheus-имена, labels и SLI во внешнем pipeline ещё не приняты.
 - [Graphify](../../graphify-out/README.md) — вспомогательная навигация;
   граф текущего проекта ещё не построен.
+- [Передача событий и конфигурации: исследование hugeParam](docs/hugeparam-research.md).
 - [Все модули проекта](../../README.md).

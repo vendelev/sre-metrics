@@ -28,7 +28,7 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("конфигурация user-login: %w", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("service", "user-login")
-	app, err := newService(cfg, logger, clock.RealTime{})
+	app, err := newService(&cfg, logger, clock.RealTime{})
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ type service struct {
 }
 
 // newService только собирает объекты: listener и фоновые задачи запускает start.
-func newService(cfg config.Config, logger *slog.Logger, clock contract.Clock) (*service, error) {
+func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (*service, error) {
 	recorder, err := otel.Prepare(otel.ResourceSettings{NodeName: cfg.NodeName, Environment: cfg.Environment})
 	if err != nil {
 		return nil, err
@@ -85,7 +85,8 @@ func newService(cfg config.Config, logger *slog.Logger, clock contract.Clock) (*
 		WriteTimeout: cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
 		ErrorLog: slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError),
 	}
-	return &service{server: server, observer: observer, recorder: recorder, cfg: cfg, logger: logger}, nil
+	// Сервис сохраняет собственный снимок, а не изменяемую конфигурацию вызывающего кода.
+	return &service{server: server, observer: observer, recorder: recorder, cfg: *cfg, logger: logger}, nil
 }
 
 func (s *service) run(ctx context.Context, ready func(net.Addr)) error {

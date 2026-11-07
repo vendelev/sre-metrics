@@ -26,15 +26,16 @@ func DefaultSettings() Settings { return Settings{MaxBodyBytes: 4096} }
 // Handler принимает события на пути /events. После создания его нельзя изменять.
 // Путь регистрируется через mux.Handle("/events", handler), без ограничения метода в mux.
 type Handler struct {
-	process      func(dEvent.Request) (application.ProcessResult, error)
+	process      func(*dEvent.Request) (application.ProcessResult, error)
 	logger       *slog.Logger
 	maxBodyBytes int64
 }
 
 // NewHandler принимает готовую операцию обработки, логгер и положительный лимит тела.
 // Он не создаёт наблюдатель, хранилище или часы и не запускает сервер.
+// Операция вызывается синхронно и не должна изменять или удерживать переданное событие.
 func NewHandler(
-	process func(dEvent.Request) (application.ProcessResult, error),
+	process func(*dEvent.Request) (application.ProcessResult, error),
 	logger *slog.Logger,
 	settings Settings,
 ) (*Handler, error) {
@@ -76,7 +77,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_event")
 		return
 	}
-	result, err := h.process(event)
+	result, err := h.process(&event)
 	if err != nil {
 		status, code := processError(err)
 		if status == http.StatusInternalServerError {

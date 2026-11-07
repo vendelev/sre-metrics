@@ -64,7 +64,7 @@ func testID(n int) uuid.UUID {
 	return uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012x", n))
 }
 
-func event(id, scenario int, kind event2.Type, at time.Time) event2.Request {
+func event(id, scenario int, kind event2.Type, at time.Time) *event2.Request {
 	e := event2.Request{
 		EventID:    testID(id),
 		ScenarioID: testID(scenario),
@@ -77,10 +77,10 @@ func event(id, scenario int, kind event2.Type, at time.Time) event2.Request {
 		e.Source = event2.SourceAuth
 		e.AuthMode = &mode
 	}
-	return e
+	return &e
 }
 
-func process(t *testing.T, f *fixture, e event2.Request, want error) application.ProcessResult {
+func process(t *testing.T, f *fixture, e *event2.Request, want error) application.ProcessResult {
 	t.Helper()
 	result, err := f.observer.Process(e)
 	if !errors.Is(err, want) {
@@ -148,13 +148,17 @@ func TestNewStoreLimits(t *testing.T) {
 func TestProcessDeduplicationAndEquality(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	e := event(1, 100, event2.LoginModeDetermined, f.base)
+	before := e.Clone()
 	process(t, f, e, nil)
+	if !reflect.DeepEqual(*e, before) {
+		t.Fatal("обработка изменила входное событие")
+	}
 	copy := e.Clone()
 	copy.OccurredAt = copy.OccurredAt.In(time.FixedZone("UTC+3", 3*60*60))
-	process(t, f, copy, nil)
+	process(t, f, &copy, nil)
 	// Изменение входного указателя после приёма не меняет сохранённую историю.
 	*e.AuthMode = event2.LoginModeExistingSession
-	process(t, f, copy, nil)
+	process(t, f, &copy, nil)
 	process(t, f, e, dError.ErrConflict)
 	changes := []struct {
 		name   string
@@ -169,7 +173,7 @@ func TestProcessDeduplicationAndEquality(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			changed := copy.Clone()
 			tt.change(&changed)
-			process(t, f, changed, dError.ErrConflict)
+			process(t, f, &changed, dError.ErrConflict)
 		})
 	}
 	if scenario(t, f, 101) != nil || snapshot(t, f).Completed[scenario2.OutcomeSuccess] != 0 {
@@ -194,10 +198,10 @@ func TestProcessAgeAndDeduplicationPriority(t *testing.T) {
 	process(t, f, e, nil)
 	changed := e.Clone()
 	changed.ScenarioID = testID(101)
-	process(t, f, changed, dError.ErrConflict)
+	process(t, f, &changed, dError.ErrConflict)
 	newID := e.Clone()
 	newID.EventID = testID(2)
-	_, err := f.observer.Process(newID)
+	_, err := f.observer.Process(&newID)
 	if !errors.Is(err, dError.ErrInvalidEvent) || !errors.Is(err, dError.ErrEventTime) {
 		t.Fatalf("возраст должен сохранять обе категории: %v", err)
 	}
@@ -479,7 +483,7 @@ func TestCommitRefusalIsAtomic(t *testing.T) {
 				}
 				s.TakeMeasurements()
 				e := event(2, 100, event2.LoginFailed, f.base)
-				return state.Commit(s, &e, tt.measurement)
+				return state.Commit(s, e, tt.measurement)
 			})
 			if !errors.Is(err, dError.ErrInternal) {
 				t.Fatalf("некорректная фиксация: %v", err)

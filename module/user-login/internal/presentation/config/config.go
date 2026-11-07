@@ -122,7 +122,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 }
 
 // Validate проверяет также настройки, созданные непосредственно в Go, без чтения env.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	if err := (otel.ResourceSettings{NodeName: c.NodeName, Environment: c.Environment}).Validate(); err != nil {
 		return err
 	}

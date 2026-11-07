@@ -62,7 +62,7 @@ func (s *stack) event(t *testing.T, scenario string, kind event.Type, mode event
 	if kind == event.LoginModeDetermined {
 		e.Source, e.AuthMode = event.SourceAuth, &mode
 	}
-	if _, err := s.observer.Process(e); err != nil {
+	if _, err := s.observer.Process(&e); err != nil {
 		t.Fatal(err)
 	}
 	s.ids = append(s.ids, id, scenario)

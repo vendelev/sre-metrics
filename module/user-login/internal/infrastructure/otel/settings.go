@@ -42,35 +42,8 @@ func ValidateEndpoint(endpoint string) error {
 		u.Path != "/v1/metrics" || u.RawPath != "" || u.Opaque != "" {
 		return invalid()
 	}
-	host := u.Hostname()
-	if host == "" {
+	if !validEndpointHost(u) {
 		return invalid()
-	}
-	if strings.Contains(u.Host, "[") || strings.Contains(host, ":") {
-		ip, err := netip.ParseAddr(host)
-		if err != nil || !ip.Is6() || ip.Zone() != "" {
-			return invalid()
-		}
-	} else {
-		if len(host) > 253 {
-			return invalid()
-		}
-		for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
-			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-				return invalid()
-			}
-			for _, r := range label {
-				allowed := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-'
-				if !allowed {
-					return invalid()
-				}
-			}
-		}
-		if strings.IndexFunc(host, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0 {
-			if _, err := netip.ParseAddr(host); err != nil {
-				return invalid()
-			}
-		}
 	}
 	if port := u.Port(); port != "" {
 		n, err := strconv.ParseUint(port, 10, 16)
@@ -81,4 +54,41 @@ func ValidateEndpoint(endpoint string) error {
 		return invalid()
 	}
 	return nil
+}
+
+func validEndpointHost(u *url.URL) bool {
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.Contains(u.Host, "[") || strings.Contains(host, ":") {
+		ip, err := netip.ParseAddr(host)
+		return err == nil && ip.Is6() && ip.Zone() == ""
+	}
+	if !validEndpointDNSName(host) {
+		return false
+	}
+	if strings.IndexFunc(host, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0 {
+		_, err := netip.ParseAddr(host)
+		return err == nil
+	}
+	return true
+}
+
+func validEndpointDNSName(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			allowed := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-'
+			if !allowed {
+				return false
+			}
+		}
+	}
+	return true
 }

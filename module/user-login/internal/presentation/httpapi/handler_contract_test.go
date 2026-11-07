@@ -1,9 +1,9 @@
 package httpapi_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http/httptest"
 	"reflect"
@@ -189,28 +189,35 @@ func TestHandlerRetentionAndOldDuplicate(t *testing.T) {
 	}
 }
 
-// snapshotLogHandler проверяет возможность повторно войти в хранилище во время лога.
-type snapshotLogHandler struct {
-	slog.Handler
+// snapshotLogWriter проверяет повторный вход в хранилище при синхронной записи JSON-лога.
+type snapshotLogWriter struct {
+	io.Writer
 	checkStore func() error
 	err        error
 }
 
-func (h *snapshotLogHandler) Handle(ctx context.Context, record slog.Record) error {
-	h.err = h.checkStore()
-	return h.Handler.Handle(ctx, record)
+func (w *snapshotLogWriter) Write(p []byte) (int, error) {
+	w.err = w.checkStore()
+	if w.err != nil {
+		return 0, w.err
+	}
+	return w.Writer.Write(p)
 }
 
 func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 	for _, successFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("успех первым=%t", successFirst), func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
-			logHandler := &snapshotLogHandler{
-				Handler:    slog.NewJSONHandler(&f.logs, nil),
+			logWriter := &snapshotLogWriter{
+				Writer:     &f.logs,
 				checkStore: func() error { return f.store.Within(func(contract.State) error { return nil }) },
 			}
 			var err error
-			f.handler, err = httpapi.NewHandler(f.observer.Process, slog.New(logHandler), httpapi.DefaultSettings())
+			f.handler, err = httpapi.NewHandler(
+				f.observer.Process,
+				slog.New(slog.NewJSONHandler(logWriter, nil)),
+				httpapi.DefaultSettings(),
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -248,8 +255,8 @@ func TestHandlerNegativeDurationDiagnostic(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("логирование удерживает защищённую операцию")
 			}
-			if logHandler.err != nil {
-				t.Fatal(logHandler.err)
+			if logWriter.err != nil {
+				t.Fatal(logWriter.err)
 			}
 			var entry map[string]any
 			if err := json.Unmarshal(f.logs.Bytes(), &entry); err != nil {

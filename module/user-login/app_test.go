@@ -3,7 +3,6 @@ package userlogin
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -84,12 +83,12 @@ func TestNewServiceSharesState(t *testing.T) {
 	}
 }
 
-func testService(t *testing.T, cfg config.Config, c contract.Clock) *service {
+func testService(t *testing.T, cfg *config.Config, c contract.Clock) *service {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := newService(cfg, logger, c)
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +97,17 @@ func testService(t *testing.T, cfg config.Config, c contract.Clock) *service {
 		t.Fatal("SDK запущен при сборке")
 	}
 	return app
+}
+
+func TestNewServiceCopiesConfig(t *testing.T) {
+	t.Parallel()
+	cfg := actualConfig(newServiceReceiver(t))
+	want := *cfg
+	app := testService(t, cfg, clock.RealTime{})
+	*cfg = config.Config{}
+	if app.cfg != want || app.server.Addr != want.ListenAddr {
+		t.Fatal("изменение исходной конфигурации повлияло на собранный сервис")
+	}
 }
 
 func waitResult(t *testing.T, done <-chan error) error {
@@ -245,7 +255,7 @@ func TestNewServiceConstructorError(t *testing.T) {
 	cfg := config.Default()
 	cfg.NodeName, cfg.Environment = "node-test", "test"
 	cfg.MaxScenarios = 0
-	app, err := newService(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), clock.RealTime{})
+	app, err := newService(&cfg, slog.New(slog.DiscardHandler), clock.RealTime{})
 	if err == nil || !strings.Contains(err.Error(), "лимиты сценариев и событий должны быть положительными") {
 		t.Fatalf("ошибка конструктора memory потеряна: %v", err)
 	}
@@ -345,7 +355,7 @@ func TestStopConcurrentCallsShareCleanup(t *testing.T) {
 	if first == nil || second == nil || !errors.Is(first, second) {
 		t.Fatalf("конкурентные остановки не сохранили одну ошибку: %v / %v", first, second)
 	}
-	if err := app.stop(t.Context()); err != second || r.calls.Load() != 1 {
+	if err := app.stop(t.Context()); !errors.Is(err, second) || r.calls.Load() != 1 {
 		t.Fatal("повторная очистка изменила результат или повторила экспорт")
 	}
 }

@@ -92,7 +92,7 @@ func newServiceReceiver(t *testing.T) *serviceReceiver {
 	return r
 }
 
-func actualConfig(r *serviceReceiver) config.Config {
+func actualConfig(r *serviceReceiver) *config.Config {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.NodeName, cfg.Environment = "node-test", "test"
@@ -102,7 +102,7 @@ func actualConfig(r *serviceReceiver) config.Config {
 	cfg.ShutdownTimeout = 2 * time.Second
 	cfg.HTTPReadHeaderTimeout = 50 * time.Millisecond
 	cfg.HTTPReadTimeout, cfg.HTTPWriteTimeout = 100*time.Millisecond, 100*time.Millisecond
-	return cfg
+	return &cfg
 }
 
 type runningService struct {

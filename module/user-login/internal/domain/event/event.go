@@ -118,10 +118,11 @@ type Request struct {
 }
 
 // Clone возвращает независимое событие, включая значение необязательного AuthMode.
-func (e Request) Clone() Request {
+func (e *Request) Clone() Request {
+	copy := *e
 	if e.AuthMode != nil {
 		mode := *e.AuthMode
-		e.AuthMode = &mode
+		copy.AuthMode = &mode
 	}
-	return e
+	return copy
 }

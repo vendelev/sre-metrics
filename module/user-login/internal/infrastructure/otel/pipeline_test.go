@@ -28,7 +28,7 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
 
-func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+func testLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func pipelineSettings(endpoint string) PipelineSettings {
 	return PipelineSettings{Endpoint: endpoint, Interval: time.Hour, ExportTimeout: time.Second}
@@ -113,7 +113,7 @@ func processExportEvent(
 		mode := event.LoginModeCredentials
 		e.Source, e.AuthMode = event.SourceAuth, &mode
 	}
-	if _, err := o.Process(e); err != nil {
+	if _, err := o.Process(&e); err != nil {
 		t.Fatal(err)
 	}
 	return e.EventID.String()

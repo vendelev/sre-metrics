@@ -65,7 +65,7 @@ func await(t *testing.T, signal <-chan struct{}) {
 	}
 }
 
-func processOperation(f *fixture, e event2.Request) func() error {
+func processOperation(f *fixture, e *event2.Request) func() error {
 	return func() error {
 		_, err := f.observer.Process(e)
 		return err

@@ -1,53 +1,75 @@
 version: "2"
 
 run:
-  relative-path-mode: gomod
+    relative-path-mode: gomod
 
 linters:
-  default: standard
-  enable:
-    - depguard
-  settings:
-    depguard:
-      rules:
-        user-login-isolation:
-          files:
-            - "${base-path}/user-login/*.go"
-            - "${base-path}/user-login/**/*.go"
-          deny:
-            - pkg: "github.com/vendelev/sre-metrics/"
-              desc: "user-login может импортировать только собственные пакеты и явно выделенные общие пакеты platform."
-          allow:
-            - "$gostd"
-            - "github.com/vendelev/sre-metrics/user-login$"
-            - "github.com/vendelev/sre-metrics/user-login/"
-            - "github.com/vendelev/sre-metrics/platform/"
-          list-mode: lax
-        domain:
-          files:
-            - "${base-path}/user-login/internal/domain/*.go"
-            - "${base-path}/user-login/internal/domain/**/*.go"
-          list-mode: strict
-          allow:
-            - "$gostd"
-            - "github.com/google/uuid$"
-            - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
-            - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
-          deny:
-            - pkg: "net/http"
-              desc: "HTTP относится к presentation, а не к domain."
-        application:
-          files:
-            - "${base-path}/user-login/internal/application/*.go"
-            - "${base-path}/user-login/internal/application/**/*.go"
-          list-mode: strict
-          allow:
-            - "$gostd"
-            - "github.com/google/uuid$"
-            - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
-            - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
-            - "github.com/vendelev/sre-metrics/user-login/internal/application$"
-            - "github.com/vendelev/sre-metrics/user-login/internal/application/"
-          deny:
-            - pkg: "net/http"
-              desc: "Код application работает с событиями, а не с HTTP-запросами."
+    default: standard
+    enable:
+        - depguard
+        - errcheck
+        - govet
+        - ineffassign
+        - staticcheck
+        - unused
+        - goconst
+        - unconvert
+        - gocritic
+        - gocyclo
+        - nakedret
+        - gochecknoinits
+        - sloglint
+        - errorlint
+    exclusions:
+        rules:
+            -   path: '_test\.go$'
+                linters:
+                    - goconst
+                    - gocyclo
+    settings:
+        gocritic:
+            enabled-checks:
+                - hugeParam
+        depguard:
+            rules:
+                user-login-isolation:
+                    files:
+                        - "${base-path}/user-login/*.go"
+                        - "${base-path}/user-login/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "user-login может импортировать только собственные пакеты и явно выделенные общие пакеты platform."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/user-login$"
+                        - "github.com/vendelev/sre-metrics/user-login/"
+                        - "github.com/vendelev/sre-metrics/platform/"
+                    list-mode: lax
+                domain:
+                    files:
+                        - "${base-path}/user-login/internal/domain/*.go"
+                        - "${base-path}/user-login/internal/domain/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                    deny:
+                        - pkg: "net/http"
+                          desc: "HTTP относится к presentation, а не к domain."
+                application:
+                    files:
+                        - "${base-path}/user-login/internal/application/*.go"
+                        - "${base-path}/user-login/internal/application/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/"
+                    deny:
+                        - pkg: "net/http"
+                          desc: "Код application работает с событиями, а не с HTTP-запросами."
