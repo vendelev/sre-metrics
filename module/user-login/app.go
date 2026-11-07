@@ -23,7 +23,7 @@ import (
 // Run собирает и запускает сервис до отмены ctx или ошибки компонента.
 // Успешная остановка дожидается запросов и обслуживания; сигналы обрабатывает cmd.
 func Run(ctx context.Context) error {
-	cfg, err := config.Load(os.LookupEnv)
+	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("конфигурация user-login: %w", err)
 	}
@@ -58,12 +58,13 @@ type service struct {
 
 // newService только собирает объекты: listener и фоновые задачи запускает start.
 func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (*service, error) {
-	recorder, err := otel.Prepare(otel.ResourceSettings{NodeName: cfg.NodeName, Environment: cfg.Environment})
+	recorder, err := otel.Prepare()
 	if err != nil {
 		return nil, err
 	}
 	store, err := memory.NewStore(memory.Limits{
-		MaxScenarios: cfg.MaxScenarios, MaxEventsPerScenario: cfg.MaxEventsPerScenario,
+		MaxScenarios:         cfg.MaxScenarios,
+		MaxEventsPerScenario: cfg.MaxEventsPerScenario,
 	}, recorder)
 	if err != nil {
 		return nil, err

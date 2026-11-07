@@ -33,6 +33,31 @@ type stack struct {
 	ids      []string
 }
 
+func TestRecorderCardinalityLimitFromEnvironment(t *testing.T) {
+	t.Setenv("OTEL_GO_X_CARDINALITY_LIMIT", "1")
+	r := oteltest.New(t)
+	r.Record(scenario.Measurements{Completion: scenario.OutcomeSuccess})
+	rm := oteltest.Collect(t, r)
+	for _, scope := range rm.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != otel.CompletedName {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Sum[int64])
+			if !ok || len(data.DataPoints) != 1 {
+				t.Fatalf("ожидался один ряд Counter при лимите 1: %+v", m)
+			}
+			point := data.DataPoints[0]
+			overflow, ok := point.Attributes.Value(attribute.Key("otel.metric.overflow"))
+			if !ok || !overflow.AsBool() || point.Value != 1 {
+				t.Fatalf("измерение не попало в overflow: %+v", point)
+			}
+			return
+		}
+	}
+	t.Fatal("нет счётчика завершений")
+}
+
 func newStack(t *testing.T) *stack {
 	t.Helper()
 	r := oteltest.New(t)
@@ -88,23 +113,8 @@ func sdkCollect(t *testing.T, s *stack) metricdata.ResourceMetrics {
 
 func assertTree(t *testing.T, rm metricdata.ResourceMetrics, before, after time.Time) {
 	t.Helper()
-	wantResource := map[string]string{
-		"service.namespace": "sptr", "service.name": "mis-login-observability",
-		"host.name": "node-test", "deployment.environment.name": "test",
-	}
-	if rm.Resource.Len() != 5 {
+	if rm.Resource.Len() != 0 {
 		t.Fatalf("лишние атрибуты Resource: %v", rm.Resource)
-	}
-	for key, want := range wantResource {
-		value, ok := rm.Resource.Set().Value(attribute.Key(key))
-		if !ok || value.AsString() != want {
-			t.Fatalf("Resource %s: %v", key, value)
-		}
-	}
-	instance, ok := rm.Resource.Set().Value("service.instance.id")
-	id, err := uuid.Parse(instance.AsString())
-	if !ok || err != nil || id.Version() != 7 || id.Variant() != uuid.RFC4122 {
-		t.Fatalf("ID экземпляра не UUID v7: %v", instance)
 	}
 	if len(rm.ScopeMetrics) != 1 {
 		t.Fatalf("число scope: %d", len(rm.ScopeMetrics))
@@ -301,11 +311,9 @@ func TestRecorderSDKContract(t *testing.T) {
 		t.Fatal("новое событие не увеличило нужный ряд")
 	}
 	other := newStack(t)
-	independent := sdkCollect(t, other)
-	firstID, _ := full.Resource.Set().Value("service.instance.id")
-	secondID, _ := independent.Resource.Set().Value("service.instance.id")
-	if firstID == secondID || !reflect.DeepEqual(zero, oteltest.Read(t, other.recorder)) {
-		t.Fatal("экземпляры делят ID или накопление")
+	sdkCollect(t, other)
+	if !reflect.DeepEqual(zero, oteltest.Read(t, other.recorder)) {
+		t.Fatal("экземпляры делят накопление")
 	}
 	if !full.Resource.Equal(updated.Resource) {
 		t.Fatal("Resource пересоздан при сборе")
@@ -329,15 +337,4 @@ func TestRecorderLateHistogram(t *testing.T) {
 		t.Fatal("поздний факт повторил успех или потерял наблюдение")
 	}
 	assertStableStarts(t, after, sdkCollect(t, s))
-}
-
-// Resource-env отклоняется до создания SDK, включая дополнительные ключи.
-func TestRecorderSDKResourceEnvironment(t *testing.T) {
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.attribute=synthetic,service.name=from-attributes")
-	t.Setenv("OTEL_SERVICE_NAME", "from-service-env")
-	r, err := otel.New(otel.ResourceSettings{NodeName: "node-test", Environment: "test"})
-	if r != nil || err == nil || !strings.Contains(err.Error(), "OTEL_RESOURCE_ATTRIBUTES") ||
-		strings.Contains(err.Error(), "synthetic") {
-		t.Fatalf("Resource-env не отклонён безопасно: %v", err)
-	}
 }

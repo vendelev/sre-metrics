@@ -15,6 +15,7 @@
 ## Разработка и документация
 
 - [Окружение, сборка и проверки](docs/development.md).
+- [Пример переменных окружения](.env.example) — скопируйте в `.env` для Compose.
 - [Документация Go-пакетов на pkg.go.dev](https://pkg.go.dev/github.com/vendelev/sre-metrics).
 - [Локальный интеграционный стенд: Compose, Collector, Prometheus и Grafana](docker/otel-collector/README.md).
 - [Архитектурные правила](.agents/rules/Architecture.md).

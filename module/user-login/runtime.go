@@ -151,10 +151,7 @@ func (s *service) startSDK(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	pipeline, err := otel.StartPipeline(ctx, s.recorder, otel.PipelineSettings{
-		Endpoint: s.cfg.OTLPMetricsEndpoint, Interval: s.cfg.OTLPExportInterval,
-		ExportTimeout: s.cfg.OTLPExportTimeout,
-	}, s.logger.With("component", "otel"))
+	pipeline, err := otel.StartPipeline(ctx, s.recorder, s.logger.With("component", "otel"))
 	s.pipeline = pipeline
 	if err != nil {
 		return fmt.Errorf("запуск OTLP pipeline: %w", err)

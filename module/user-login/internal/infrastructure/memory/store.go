@@ -146,27 +146,12 @@ func (s *state) Commit(
 	event *dEvent.Request,
 	measurements dScenario.Measurements,
 ) error {
-	if s.store == nil || loginScenario == nil {
+	if s.store == nil {
 		return dError.ErrInternal
 	}
 	entry, exists := s.store.scenarios[loginScenario.ID()]
-	if event == nil {
-		if !exists {
-			return dError.ErrInternal
-		}
-	} else {
-		if event.ScenarioID != loginScenario.ID() {
-			return dError.ErrInternal
-		}
-		if _, ok := s.store.events[event.EventID]; ok {
-			return dError.ErrConflict
-		}
-		if err := s.CheckCapacity(loginScenario.ID()); err != nil {
-			return err
-		}
-	}
-	// Все проверки выполнены до первой записи. После сохранения отметок вызывается
-	// только локальный SDK. Между инструментами нет транзакции или механизма отката.
+	// Предусловия комплекта обеспечивает application. После сохранения отметок
+	// вызывается только локальный SDK. Между инструментами нет транзакции или механизма отката.
 	if !exists {
 		entry = &record{eventIDs: make(map[uuid.UUID]struct{})}
 		s.store.scenarios[loginScenario.ID()] = entry

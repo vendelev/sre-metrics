@@ -1,177 +1,117 @@
 package config
 
 import (
+	"errors"
 	"fmt"
-	"net"
-	"net/netip"
-	"strconv"
-	"strings"
+	"reflect"
 	"time"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
+	"github.com/caarlos0/env/v11"
 )
 
 // Config содержит проверяемые настройки одного запуска сервиса.
-// После сборки компонентов настройки не изменяются. SDK-env дополнительно
-// проверяется при создании адаптера, чтобы прямой конструктор не обходил политику.
+// После сборки компонентов настройки не изменяются.
 type Config struct {
-	ListenAddr            string
-	MaxScenarios          int
-	MaxEventsPerScenario  int
-	MaintenanceInterval   time.Duration
-	HTTPReadHeaderTimeout time.Duration
-	HTTPReadTimeout       time.Duration
-	HTTPWriteTimeout      time.Duration
-	HTTPIdleTimeout       time.Duration
-	ShutdownTimeout       time.Duration
-	OTLPMetricsEndpoint   string
-	OTLPExportInterval    time.Duration
-	OTLPExportTimeout     time.Duration
-	NodeName              string
-	Environment           string
+	ListenAddr            string        `env:"USER_LOGIN_LISTEN_ADDR"`
+	MaxScenarios          int           `env:"USER_LOGIN_MAX_SCENARIOS"`
+	MaxEventsPerScenario  int           `env:"USER_LOGIN_MAX_EVENTS_PER_SCENARIO"`
+	MaintenanceInterval   time.Duration `env:"USER_LOGIN_MAINTENANCE_INTERVAL"`
+	HTTPReadHeaderTimeout time.Duration `env:"USER_LOGIN_HTTP_READ_HEADER_TIMEOUT"`
+	HTTPReadTimeout       time.Duration `env:"USER_LOGIN_HTTP_READ_TIMEOUT"`
+	HTTPWriteTimeout      time.Duration `env:"USER_LOGIN_HTTP_WRITE_TIMEOUT"`
+	HTTPIdleTimeout       time.Duration `env:"USER_LOGIN_HTTP_IDLE_TIMEOUT"`
+	ShutdownTimeout       time.Duration `env:"USER_LOGIN_SHUTDOWN_TIMEOUT"`
 }
 
 // Default возвращает начальные лимиты контракта и согласованные настройки запуска.
 func Default() Config {
 	return Config{
-		ListenAddr:   ":8080",
-		MaxScenarios: 10_000, MaxEventsPerScenario: 32,
-		MaintenanceInterval: time.Second, HTTPReadHeaderTimeout: time.Second,
-		HTTPReadTimeout: 2 * time.Second, HTTPWriteTimeout: 2 * time.Second,
-		HTTPIdleTimeout: 30 * time.Second, ShutdownTimeout: 10 * time.Second,
-		OTLPExportInterval: 10 * time.Second, OTLPExportTimeout: 2 * time.Second,
+		ListenAddr:            ":8080",
+		MaxScenarios:          10_000,
+		MaxEventsPerScenario:  32,
+		MaintenanceInterval:   time.Second,
+		HTTPReadHeaderTimeout: time.Second,
+		HTTPReadTimeout:       2 * time.Second,
+		HTTPWriteTimeout:      2 * time.Second,
+		HTTPIdleTimeout:       30 * time.Second,
+		ShutdownTimeout:       10 * time.Second,
 	}
 }
 
-// Load читает каждую известную переменную один раз через lookup, например os.LookupEnv.
-// Необязательные значения имеют умолчания; обязательные должны присутствовать.
-// Явно заданное пустое значение является ошибкой.
-func Load(lookup func(string) (string, bool)) (Config, error) {
-	if lookup == nil {
-		return Config{}, fmt.Errorf("загрузка конфигурации: отсутствует источник env")
-	}
+// Load читает настройки сервиса из окружения. Стандартные OTEL_* читает сам SDK.
+func Load() (Config, error) {
 	cfg := Default()
-	if err := otel.ValidateEnvironment(lookup); err != nil {
-		return Config{}, err
+	if err := env.Parse(&cfg); err != nil {
+		return Config{}, fmt.Errorf("загрузка конфигурации: %w", parseErrors(err))
 	}
-	for _, setting := range []struct {
-		name   string
-		target *string
-	}{
-		{"USER_AUTH_OTLP_METRICS_ENDPOINT", &cfg.OTLPMetricsEndpoint},
-		{"USER_AUTH_NODE_NAME", &cfg.NodeName}, {"USER_AUTH_ENVIRONMENT", &cfg.Environment},
-	} {
-		if value, ok := lookup(setting.name); ok {
-			*setting.target = value
-		}
-	}
-	if value, ok := lookup("USER_AUTH_LISTEN_ADDR"); ok {
-		cfg.ListenAddr = value
-	}
-	for _, setting := range []struct {
-		name   string
-		target *int
-	}{
-		{"USER_AUTH_MAX_SCENARIOS", &cfg.MaxScenarios},
-		{"USER_AUTH_MAX_EVENTS_PER_SCENARIO", &cfg.MaxEventsPerScenario},
-	} {
-		if value, ok := lookup(setting.name); ok {
-			parsed, err := strconv.Atoi(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s: требуется целое десятичное число в диапазоне int", setting.name)
-			}
-			*setting.target = parsed
-		}
-	}
-	for _, setting := range []struct {
-		name   string
-		target *time.Duration
-	}{
-		{"USER_AUTH_MAINTENANCE_INTERVAL", &cfg.MaintenanceInterval},
-		{"USER_AUTH_HTTP_READ_HEADER_TIMEOUT", &cfg.HTTPReadHeaderTimeout},
-		{"USER_AUTH_HTTP_READ_TIMEOUT", &cfg.HTTPReadTimeout},
-		{"USER_AUTH_HTTP_WRITE_TIMEOUT", &cfg.HTTPWriteTimeout},
-		{"USER_AUTH_HTTP_IDLE_TIMEOUT", &cfg.HTTPIdleTimeout},
-		{"USER_AUTH_SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout},
-		{"USER_AUTH_OTLP_EXPORT_INTERVAL", &cfg.OTLPExportInterval},
-		{"USER_AUTH_OTLP_EXPORT_TIMEOUT", &cfg.OTLPExportTimeout},
-	} {
-		if value, ok := lookup(setting.name); ok {
-			parsed, err := time.ParseDuration(value)
-			if err != nil {
-				return Config{}, fmt.Errorf(
-					"%s: требуется длительность с единицей времени, например 500ms или 2s",
-					setting.name,
-				)
-			}
-			*setting.target = parsed
-		}
-	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
+// parseErrors сохраняет список проблемных настроек без исходных значений из ошибок env.
+func parseErrors(err error) error {
+	items := []error{err}
+	if aggregate, ok := errors.AsType[env.AggregateError](err); ok {
+		items = aggregate.Errors
+	}
+	var result []error
+	for _, item := range items {
+		if parseErr, ok := errors.AsType[env.ParseError](item); ok {
+			result = append(result, fmt.Errorf("%s: некорректный формат значения типа %s",
+				envName(parseErr.Name), parseErr.Type))
+		} else {
+			result = append(result, fmt.Errorf("некорректное описание настройки env"))
+		}
+	}
+	return errors.Join(result...)
+}
+
 // Validate проверяет также настройки, созданные непосредственно в Go, без чтения env.
 func (c *Config) Validate() error {
-	if err := (otel.ResourceSettings{NodeName: c.NodeName, Environment: c.Environment}).Validate(); err != nil {
-		return err
-	}
-	if err := otel.ValidateEndpoint(c.OTLPMetricsEndpoint); err != nil {
-		return err
-	}
-	if err := validateAddress(c.ListenAddr); err != nil {
-		return err
-	}
 	for _, setting := range []struct {
 		name  string
 		value int64
 	}{
-		{"USER_AUTH_MAX_SCENARIOS", int64(c.MaxScenarios)},
-		{"USER_AUTH_MAX_EVENTS_PER_SCENARIO", int64(c.MaxEventsPerScenario)},
-		{"USER_AUTH_MAINTENANCE_INTERVAL", int64(c.MaintenanceInterval)},
-		{"USER_AUTH_HTTP_READ_HEADER_TIMEOUT", int64(c.HTTPReadHeaderTimeout)},
-		{"USER_AUTH_HTTP_READ_TIMEOUT", int64(c.HTTPReadTimeout)},
-		{"USER_AUTH_HTTP_WRITE_TIMEOUT", int64(c.HTTPWriteTimeout)},
-		{"USER_AUTH_HTTP_IDLE_TIMEOUT", int64(c.HTTPIdleTimeout)},
-		{"USER_AUTH_SHUTDOWN_TIMEOUT", int64(c.ShutdownTimeout)},
-		{"USER_AUTH_OTLP_EXPORT_INTERVAL", int64(c.OTLPExportInterval)},
-		{"USER_AUTH_OTLP_EXPORT_TIMEOUT", int64(c.OTLPExportTimeout)},
+		{"MaxScenarios", int64(c.MaxScenarios)},
+		{"MaxEventsPerScenario", int64(c.MaxEventsPerScenario)},
+		{"MaintenanceInterval", int64(c.MaintenanceInterval)},
+		{"HTTPReadHeaderTimeout", int64(c.HTTPReadHeaderTimeout)},
+		{"HTTPReadTimeout", int64(c.HTTPReadTimeout)},
+		{"HTTPWriteTimeout", int64(c.HTTPWriteTimeout)},
+		{"HTTPIdleTimeout", int64(c.HTTPIdleTimeout)},
+		{"ShutdownTimeout", int64(c.ShutdownTimeout)},
 	} {
 		if setting.value <= 0 {
-			return fmt.Errorf("%s: значение должно быть положительным", setting.name)
+			return fmt.Errorf("%s: значение должно быть положительным", envName(setting.name))
 		}
 	}
+
 	if c.MaintenanceInterval > time.Minute {
-		return fmt.Errorf("USER_AUTH_MAINTENANCE_INTERVAL: интервал не должен превышать 1m")
+		return fmt.Errorf("%s: интервал не должен превышать 1m", envName("MaintenanceInterval"))
 	}
+
 	if c.HTTPReadHeaderTimeout > c.HTTPReadTimeout {
 		return fmt.Errorf(
-			"USER_AUTH_HTTP_READ_HEADER_TIMEOUT: значение не должно превышать USER_AUTH_HTTP_READ_TIMEOUT",
+			"%s: значение не должно превышать %s",
+			envName("HTTPReadHeaderTimeout"),
+			envName("HTTPReadTimeout"),
 		)
 	}
-	// Перекрёстная формула бюджета остановки относительно HTTP-тайм-аутов не проверяется:
-	// HTTP-тайм-ауты ограничивают сетевые операции, а не произвольный обработчик;
-	// остановка короче HTTP-тайм-аутов допустима и завершается принудительным закрытием.
+
 	return nil
 }
 
-func validateAddress(address string) error {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || strings.ContainsAny(host, " /\\\t\r\n[]") {
-		return fmt.Errorf("USER_AUTH_LISTEN_ADDR: требуется адрес host:port, для IPv6 — [адрес]:port")
+// envName берёт имя настройки из тега; при отсутствии поля или тега сохраняет Go-имя для диагностики.
+func envName(name string) string {
+	field, ok := reflect.TypeFor[Config]().FieldByName(name)
+	if !ok {
+		return name
 	}
-	if strings.Contains(host, ":") {
-		if _, err := netip.ParseAddr(host); err != nil {
-			return fmt.Errorf("USER_AUTH_LISTEN_ADDR: некорректный IPv6-адрес")
-		}
+	if value := field.Tag.Get("env"); value != "" {
+		return value
 	}
-	if port == "" || strings.IndexFunc(port, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-		return fmt.Errorf("USER_AUTH_LISTEN_ADDR: порт должен быть числом от 0 до 65535")
-	}
-	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return fmt.Errorf("USER_AUTH_LISTEN_ADDR: порт должен быть числом от 0 до 65535")
-	}
-	return nil
+	return name
 }

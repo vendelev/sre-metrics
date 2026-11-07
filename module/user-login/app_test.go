@@ -61,9 +61,8 @@ func (c *barrierClock) Now() time.Time {
 }
 
 func TestNewServiceSharesState(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	cfg.MaintenanceInterval = 5 * time.Millisecond
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 	app := testService(t, cfg, c)
@@ -100,8 +99,7 @@ func testService(t *testing.T, cfg *config.Config, c contract.Clock) *service {
 }
 
 func TestNewServiceCopiesConfig(t *testing.T) {
-	t.Parallel()
-	cfg := actualConfig(newServiceReceiver(t))
+	cfg := actualConfig(t, newServiceReceiver(t))
 	want := *cfg
 	app := testService(t, cfg, clock.RealTime{})
 	*cfg = config.Config{}
@@ -131,14 +129,13 @@ func waitSignal(t *testing.T, signal <-chan struct{}) {
 }
 
 func TestRunBindFailure(t *testing.T) {
-	t.Parallel()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
 	r := newServiceReceiver(t)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	cfg.ListenAddr = listener.Addr().String()
 	app := testService(t, cfg, clock.RealTime{})
 	ready := false
@@ -152,11 +149,10 @@ func TestRunBindFailure(t *testing.T) {
 }
 
 func TestRunCancelledBeforeStartup(t *testing.T) {
-	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	r := newServiceReceiver(t)
-	app := testService(t, actualConfig(r), clock.RealTime{})
+	app := testService(t, actualConfig(t, r), clock.RealTime{})
 	ready := false
 	if err := app.run(ctx, func(net.Addr) { ready = true }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("отмена до запуска не возвращена как ошибка: %v", err)
@@ -187,9 +183,8 @@ func TestRunMaintenanceFailure(t *testing.T) {
 			name = "одновременно с отменой"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			r := newServiceReceiver(t)
-			cfg := actualConfig(r)
+			cfg := actualConfig(t, r)
 			cfg.MaintenanceInterval = time.Millisecond
 			app := testService(t, cfg, clock.RealTime{})
 			ctx, cancel := context.WithCancel(t.Context())
@@ -215,9 +210,8 @@ func TestRunMaintenanceFailure(t *testing.T) {
 }
 
 func TestRunShutdownBudget(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
-	app := testService(t, actualConfig(r), clock.RealTime{})
+	app := testService(t, actualConfig(t, r), clock.RealTime{})
 	app.cfg.ShutdownTimeout = 50 * time.Millisecond
 	entered, release, exited := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	releaseRequest := sync.OnceFunc(func() { close(release) })
@@ -253,7 +247,6 @@ func TestRunShutdownBudget(t *testing.T) {
 func TestNewServiceConstructorError(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
-	cfg.NodeName, cfg.Environment = "node-test", "test"
 	cfg.MaxScenarios = 0
 	app, err := newService(&cfg, slog.New(slog.DiscardHandler), clock.RealTime{})
 	if err == nil || !strings.Contains(err.Error(), "лимиты сценариев и событий должны быть положительными") {
@@ -278,10 +271,9 @@ func assertListenerClosed(t *testing.T, app *service) {
 func TestStartupCancellationBetweenPhases(t *testing.T) {
 	for _, phase := range []string{"после bind", "после SDK", "после обслуживания", "после HTTP"} {
 		t.Run(phase, func(t *testing.T) {
-			t.Parallel()
 			r := newServiceReceiver(t)
-			cfg := actualConfig(r)
-			cfg.OTLPExportInterval = time.Hour
+			cfg := actualConfig(t, r)
+			t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 			app := testService(t, cfg, clock.RealTime{})
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -333,12 +325,11 @@ func TestStartupCancellationBetweenPhases(t *testing.T) {
 }
 
 func TestStopConcurrentCallsShareCleanup(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
 	r.fail.Store(true)
 	r.hold.Store(true)
-	cfg := actualConfig(r)
-	cfg.OTLPExportInterval = time.Hour
+	cfg := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	app := testService(t, cfg, clock.RealTime{})
 	running := runActual(t, app)
 	release := sync.OnceFunc(func() { close(r.release) })

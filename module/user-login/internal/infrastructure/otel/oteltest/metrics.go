@@ -32,7 +32,7 @@ type Duration struct {
 // New создаёт изолированный SDK и регистрирует его освобождение после теста.
 func New(t testing.TB) *otel.Recorder {
 	t.Helper()
-	r, err := otel.New(otel.ResourceSettings{NodeName: "node-test", Environment: "test"})
+	r, err := otel.New()
 	if err != nil {
 		t.Fatal(err)
 	}

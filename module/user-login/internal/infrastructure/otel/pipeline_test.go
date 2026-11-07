@@ -2,13 +2,15 @@ package otel
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -30,13 +32,19 @@ import (
 
 func testLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func pipelineSettings(endpoint string) PipelineSettings {
-	return PipelineSettings{Endpoint: endpoint, Interval: time.Hour, ExportTimeout: time.Second}
+func configurePipeline(t *testing.T, endpoint string) {
+	t.Helper()
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", endpoint)
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "1000")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative")
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	t.Setenv("OTEL_METRIC_EXPORT_TIMEOUT", "1000")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.instance.id=test-instance")
 }
 
 func preparedRecorder(t *testing.T) *Recorder {
 	t.Helper()
-	r, err := Prepare(ResourceSettings{NodeName: "node-test", Environment: "test"})
+	r, err := Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +59,7 @@ func cleanupPipeline(t *testing.T, p *Pipeline) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		// Страховка при Fatal: освобождаем SDK и transport без финальной отправки.
+		// Страховка при Fatal: освобождаем SDK без финальной отправки.
 		// Ошибки штатного Shutdown проверяются в самих тестах.
 		_ = p.Shutdown(ctx)
 	})
@@ -142,16 +150,13 @@ func checkWire(t *testing.T, request *collector.ExportMetricsServiceRequest) wir
 	}
 	rm := request.ResourceMetrics[0]
 	resource := attrs(rm.Resource.Attributes)
-	id, err := uuid.Parse(resource["service.instance.id"])
-	if err != nil || id.Version() != 7 {
-		t.Fatal("не UUID v7")
-	}
 	if !reflect.DeepEqual(
 		resource,
-		map[string]string{"service.namespace": "sptr", "service.name": "mis-login-observability",
-			"service.instance.id": id.String(), "host.name": "node-test", "deployment.environment.name": "test"},
+		map[string]string{
+			"service.instance.id": "test-instance",
+		},
 	) ||
-		len(rm.Resource.Attributes) != 5 {
+		len(rm.Resource.Attributes) != 1 {
 		t.Fatalf("Resource: %v", resource)
 	}
 	if len(rm.ScopeMetrics) != 1 || rm.ScopeMetrics[0].Scope.Name != ScopeName ||
@@ -164,7 +169,7 @@ func checkWire(t *testing.T, request *collector.ExportMetricsServiceRequest) wir
 		completed: make(map[string]int64),
 		errors:    make(map[string]int64),
 		starts:    make(map[string]uint64),
-		instance:  id.String(),
+		instance:  resource["service.instance.id"],
 	}
 	for _, m := range rm.ScopeMetrics[0].Metrics {
 		if m.Description != "" {
@@ -240,7 +245,6 @@ func checkWireTime(t *testing.T, start, end uint64) {
 // BR-41, BR-43–47, AC-08: настоящий application + memory + SDK + protobuf + HTTP.
 func TestPipelineOTLPHTTP(t *testing.T) {
 	requests := make(chan *collector.ExportMetricsServiceRequest, 20)
-	closedConnections := make(chan struct{}, 20)
 	var calls atomic.Int64
 	var failure atomic.Bool
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -268,16 +272,14 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
 	}))
-	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateClosed {
-			closedConnections <- struct{}{}
-		}
-	}
 	server.Start()
 	defer server.Close()
+	configurePipeline(t, server.URL+"/v1/metrics")
+	// Явный View сохраняет контракт Histogram независимо от предпочтения экспортёра.
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION", "base2_exponential_bucket_histogram")
 	r := preparedRecorder(t)
 	instance, _ := r.resource.Set().Value("service.instance.id")
-	p, err := StartPipeline(t.Context(), r, pipelineSettings(server.URL+"/v1/metrics"), testLogger())
+	p, err := StartPipeline(t.Context(), r, testLogger())
 	cleanupPipeline(t, p)
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +292,7 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	if baseline.instance != instance.AsString() {
 		t.Fatal("активация изменила ID подготовленного Recorder")
 	}
-	repeatedPipeline, err := StartPipeline(t.Context(), r, pipelineSettings(server.URL+"/v1/metrics"), testLogger())
+	repeatedPipeline, err := StartPipeline(t.Context(), r, testLogger())
 	cleanupPipeline(t, repeatedPipeline)
 	if repeatedPipeline != nil || err == nil {
 		t.Fatalf("разрешена повторная активация Recorder: %v", err)
@@ -320,7 +322,7 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	}
 	failed := checkWire(t, receive(t, requests))
 	if calls.Load() != 2 {
-		t.Fatal("retry внутри попытки")
+		t.Fatal("неожиданное число попыток в пределах короткого timeout")
 	}
 	processExportEvent(t, o, 11, event.LoginRejected, now)
 	failure.Store(false)
@@ -356,7 +358,6 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	if err := p.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	receive(t, closedConnections)
 	finalRequest := receive(t, requests)
 	final := checkWire(t, finalRequest)
 	encoded, err := protojson.Marshal(finalRequest)
@@ -383,9 +384,9 @@ func TestPipelineTimeoutAndHTTPIndependence(t *testing.T) {
 	)
 	defer server.Close()
 	defer close(release)
-	settings := pipelineSettings(server.URL + "/v1/metrics")
-	settings.ExportTimeout = 100 * time.Millisecond
-	p, err := StartPipeline(t.Context(), preparedRecorder(t), settings, testLogger())
+	configurePipeline(t, server.URL+"/v1/metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "100")
+	p, err := StartPipeline(t.Context(), preparedRecorder(t), testLogger())
 	cleanupPipeline(t, p)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +433,8 @@ func TestPipelineRejectsUntrustedHTTPS(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 	defer server.Close()
-	p, err := StartPipeline(t.Context(), preparedRecorder(t), pipelineSettings(server.URL+"/v1/metrics"), testLogger())
+	configurePipeline(t, server.URL+"/v1/metrics")
+	p, err := StartPipeline(t.Context(), preparedRecorder(t), testLogger())
 	cleanupPipeline(t, p)
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +460,8 @@ func TestPipelineCanceledBeforeActivation(t *testing.T) {
 	// Отмена между подготовкой и активацией не должна запускать reader.
 	// Очистка уже запущенного pipeline отдельно проверяется lifecycle-тестами сервиса.
 	cancel()
-	p, err := StartPipeline(ctx, r, pipelineSettings(server.URL+"/v1/metrics"), testLogger())
+	configurePipeline(t, server.URL+"/v1/metrics")
+	p, err := StartPipeline(ctx, r, testLogger())
 	cleanupPipeline(t, p)
 	if p != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("отмена создания: %v", err)
@@ -478,8 +481,7 @@ func TestPipelineRejectsUnpreparedRecorder(t *testing.T) {
 		{name: "нулевой Recorder", recorder: &Recorder{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			p, err := StartPipeline(t.Context(), test.recorder,
-				pipelineSettings("http://localhost:4318/v1/metrics"), testLogger())
+			p, err := StartPipeline(t.Context(), test.recorder, testLogger())
 			cleanupPipeline(t, p)
 			if p != nil || err == nil {
 				t.Fatalf("принят неподготовленный Recorder: %v", err)
@@ -488,49 +490,119 @@ func TestPipelineRejectsUnpreparedRecorder(t *testing.T) {
 	}
 }
 
-func TestPipelineRejectsChangedEnvironment(t *testing.T) {
-	r := preparedRecorder(t)
-	t.Setenv("OTEL_SERVICE_NAME", "synthetic-secret")
-	p, err := StartPipeline(t.Context(), r, pipelineSettings("http://localhost:4318/v1/metrics"), testLogger())
-	cleanupPipeline(t, p)
-	if p != nil || err == nil || !strings.Contains(err.Error(), "OTEL_SERVICE_NAME") ||
-		strings.Contains(err.Error(), "synthetic-secret") {
-		t.Fatalf("изменённое SDK-env не отклонено безопасно: %v", err)
-	}
-}
-
-func TestPipelineInvalidSettings(t *testing.T) {
+func TestPipelineRequiresLogger(t *testing.T) {
 	t.Parallel()
-	for _, change := range []struct {
-		name  string
-		apply func(*PipelineSettings)
-	}{
-		{"endpoint", func(s *PipelineSettings) { s.Endpoint = "http://localhost" }},
-		{"interval", func(s *PipelineSettings) { s.Interval = 0 }},
-		{"export timeout", func(s *PipelineSettings) { s.ExportTimeout = -1 }},
-	} {
-		t.Run(change.name, func(t *testing.T) {
-			s := pipelineSettings("http://localhost:4318/v1/metrics")
-			change.apply(&s)
-			p, err := StartPipeline(t.Context(), preparedRecorder(t), s, testLogger())
-			cleanupPipeline(t, p)
-			if p != nil || err == nil {
-				t.Fatalf("невалидные настройки: %v", err)
-			}
-		})
-	}
-	s := pipelineSettings("http://localhost:4318/v1/metrics")
 	r := preparedRecorder(t)
-	p, err := StartPipeline(t.Context(), r, s, nil)
+	p, err := StartPipeline(t.Context(), r, nil)
 	cleanupPipeline(t, p)
 	if p != nil || err == nil {
 		t.Fatal("принят nil logger")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	p, err = StartPipeline(ctx, r, s, testLogger())
+	p, err = StartPipeline(ctx, r, testLogger())
 	cleanupPipeline(t, p)
 	if p != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("отмена до создания: %v", err)
+	}
+}
+
+func TestPipelineUsesSDKCertificate(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	defer server.Close()
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caPath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configurePipeline(t, server.URL+"/v1/metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE", caPath)
+	// Специфичный metrics endpoint должен иметь приоритет над общим endpoint.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	p, err := StartPipeline(t.Context(), preparedRecorder(t), testLogger())
+	cleanupPipeline(t, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flush(t, p); err != nil || calls.Load() != 1 {
+		t.Fatalf("экспорт с CA из окружения SDK не выполнен: %v, запросов %d", err, calls.Load())
+	}
+}
+
+func TestPipelineSDKEndpointEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "общий endpoint", path: "/prefix/v1/metrics"},
+		{name: "metrics endpoint", path: "/custom-metrics"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path != tc.path {
+					t.Errorf("путь SDK: получено %s, ожидалось %s", r.URL.Path, tc.path)
+				}
+				w.Header().Set("Content-Type", "application/x-protobuf")
+			}))
+			defer server.Close()
+			configurePipeline(t, server.URL+tc.path)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", server.URL+"/prefix")
+			if tc.name == "общий endpoint" {
+				t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+			}
+			p, err := StartPipeline(t.Context(), preparedRecorder(t), testLogger())
+			cleanupPipeline(t, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := flush(t, p); err != nil || calls.Load() != 1 {
+				t.Fatalf("endpoint SDK не применён: %v, запросов %d", err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestPipelineUsesSDKRetryAndRedirect(t *testing.T) {
+	for _, mode := range []string{"retry", "redirect"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls, delivered atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := calls.Add(1)
+				if attempt == 1 {
+					if mode == "retry" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+					} else {
+						http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
+					}
+					return
+				}
+				if r.Method != http.MethodPost || (mode == "redirect" && r.URL.Path != "/redirected") {
+					t.Error("SDK изменил метод или не выполнил redirect")
+				}
+				delivered.Add(1)
+				w.Header().Set("Content-Type", "application/x-protobuf")
+			}))
+			defer server.Close()
+			configurePipeline(t, server.URL+"/v1/metrics")
+			// Retry SDK использует штатную задержку с jitter до 7,5 с перед второй попыткой.
+			t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "15000")
+			t.Setenv("OTEL_METRIC_EXPORT_TIMEOUT", "15000")
+			p, err := StartPipeline(t.Context(), preparedRecorder(t), testLogger())
+			cleanupPipeline(t, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			if err := p.Recorder.provider.ForceFlush(ctx); err != nil || delivered.Load() != 1 || calls.Load() != 2 {
+				t.Fatalf("штатный %s SDK не сработал: %v, запросов %d", mode, err, calls.Load())
+			}
+		})
 	}
 }

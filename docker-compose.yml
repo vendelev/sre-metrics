@@ -9,12 +9,8 @@ services:
             dockerfile: docker/metrics/Dockerfile
         container_name: user-login-metrics
         restart: unless-stopped
-        environment:
-            USER_AUTH_NODE_NAME: ${USER_AUTH_NODE_NAME:-node-1}
-            USER_AUTH_ENVIRONMENT: ${USER_AUTH_ENVIRONMENT:-development}
-            USER_AUTH_OTLP_METRICS_ENDPOINT: http://otel-collector:4318/v1/metrics
-            USER_AUTH_OTLP_EXPORT_INTERVAL: ${USER_AUTH_OTLP_EXPORT_INTERVAL:-10s}
-            USER_AUTH_SHUTDOWN_TIMEOUT: 10s
+        env_file:
+            - .env
         stop_grace_period: 15s
         depends_on:
             otel-collector:

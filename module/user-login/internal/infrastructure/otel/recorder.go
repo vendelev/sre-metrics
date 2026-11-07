@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
-	"github.com/google/uuid"
 	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
@@ -19,7 +17,7 @@ import (
 
 const (
 	// ScopeName — постоянное имя области инструментирования без предметных данных.
-	ScopeName = "github.com/vendelev/sre-metrics/module/user-login"
+	ScopeName = "sre-metrics/user-login"
 	// CompletedName — имя счётчика завершённых сценариев.
 	CompletedName = "mis.login.scenarios.completed"
 	// TechnicalErrorsName — имя счётчика классифицированных технических ошибок.
@@ -42,12 +40,9 @@ type Recorder struct {
 var _ dContract.MeasurementRecorder = (*Recorder)(nil)
 
 // New создаёт инструменты, зарегистрированный reader и шесть нулевых рядов Counter.
-// UUID v7 создаётся один раз. Фоновых задач и сети у локального reader нет.
-func New(settings ResourceSettings) (*Recorder, error) {
-	res, err := newResource(settings, uuid.NewV7)
-	if err != nil {
-		return nil, err
-	}
+// Resource читается из окружения. Фоновых задач и сети у локального reader нет.
+func New() (*Recorder, error) {
+	res := resource.Environment()
 	reader := sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(sdkmetric.DefaultTemporalitySelector))
 	r, err := recorderWithReader(res, reader)
 	if r != nil {
@@ -56,58 +51,32 @@ func New(settings ResourceSettings) (*Recorder, error) {
 	return r, err
 }
 
-// Prepare создаёт один Resource и UUID, но не provider, инструменты или reader.
+// Prepare фиксирует Resource из окружения, но не создаёт provider, инструменты или reader.
 // До StartPipeline регистрировать измерения нельзя. Активация
 // выполняется однократно, до запуска HTTP и обслуживания, без конкурентного доступа.
-func Prepare(settings ResourceSettings) (*Recorder, error) {
-	res, err := newResource(settings, uuid.NewV7)
-	if err != nil {
-		return nil, err
-	}
-	return &Recorder{resource: res}, nil
+func Prepare() (*Recorder, error) {
+	return &Recorder{resource: resource.Environment()}, nil
 }
 
 func (r *Recorder) checkPrepared() error {
 	if r == nil || r.resource == nil || r.provider != nil {
 		return fmt.Errorf("активация метрик: требуется подготовленный и ещё не запущенный Recorder")
 	}
-	if err := ValidateEnvironment(os.LookupEnv); err != nil {
-		return err
-	}
 	return nil
-}
-
-func newResource(settings ResourceSettings, newID func() (uuid.UUID, error)) (*resource.Resource, error) {
-	if err := ValidateEnvironment(os.LookupEnv); err != nil {
-		return nil, err
-	}
-	if err := settings.Validate(); err != nil {
-		return nil, err
-	}
-	id, err := newID()
-	if err != nil {
-		return nil, fmt.Errorf("создание ID экземпляра метрик: %w", err)
-	}
-	return resource.NewSchemaless(
-		attribute.String("service.namespace", "sptr"),
-		attribute.String("service.name", "mis-login-observability"),
-		attribute.String("service.instance.id", id.String()),
-		attribute.String("host.name", settings.NodeName),
-		attribute.String("deployment.environment.name", settings.Environment),
-	), nil
 }
 
 func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recorder, error) {
 	provider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithResource(res), sdkmetric.WithReader(reader),
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(reader),
 		sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter),
-		// Фиксируем стандартный лимит SDK: env не должен сокращать шесть рядов baseline.
-		sdkmetric.WithCardinalityLimit(2000),
 		sdkmetric.WithView(sdkmetric.NewView(
 			sdkmetric.Instrument{Name: DurationName, Kind: sdkmetric.InstrumentKindHistogram},
-			sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
-				Boundaries: []float64{5, 30, 60}, NoMinMax: true,
-			}},
+			sdkmetric.Stream{
+				Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+					Boundaries: []float64{5, 30, 60}, NoMinMax: true,
+				},
+			},
 		)),
 	)
 	r, err := newInstruments(provider)
@@ -178,7 +147,7 @@ func (r *Recorder) Record(measurements dScenario.Measurements) {
 func (r *Recorder) Reader() *sdkmetric.ManualReader { return r.reader }
 
 // Shutdown освобождает SDK после прекращения обработки. В экспортном варианте
-// вызывающий использует Pipeline.Shutdown, который также освобождает transport.
+// вызывающий использует Pipeline.Shutdown.
 func (r *Recorder) Shutdown(ctx context.Context) error {
 	if r.provider == nil {
 		return nil

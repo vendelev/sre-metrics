@@ -23,9 +23,8 @@ func (l failedAcceptListener) Accept() (net.Conn, error) {
 }
 
 func TestHTTPFailure(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
-	app := testService(t, actualConfig(r), clock.RealTime{})
+	app := testService(t, actualConfig(t, r), clock.RealTime{})
 	t.Cleanup(func() { _ = app.stop(t.Context()) })
 	if err := app.openListener(t.Context()); err != nil {
 		t.Fatal(err)
@@ -64,7 +63,6 @@ func (l *closeTriggeredAcceptListener) Close() error {
 }
 
 func TestHTTPShutdownUsesServeResult(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		cause error
@@ -74,7 +72,7 @@ func TestHTTPShutdownUsesServeResult(t *testing.T) {
 		{name: "штатное закрытие", cause: net.ErrClosed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			app := testService(t, actualConfig(newServiceReceiver(t)), clock.RealTime{})
+			app := testService(t, actualConfig(t, newServiceReceiver(t)), clock.RealTime{})
 			t.Cleanup(func() { _ = app.stop(t.Context()) })
 			if err := app.openListener(t.Context()); err != nil {
 				t.Fatal(err)
@@ -116,11 +114,10 @@ func (l closeErrorListener) Close() error {
 // Системный Close обычно успешен; подмена ограничена конкретной фазой очистки
 // и не требует фабрики listener в рабочем запуске.
 func TestCancellationPreservesCleanupErrors(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
 	r.fail.Store(true)
-	cfg := actualConfig(r)
-	cfg.OTLPExportInterval = time.Hour
+	cfg := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	app := testService(t, cfg, clock.RealTime{})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

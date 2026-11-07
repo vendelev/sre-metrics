@@ -5,17 +5,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/google/uuid"
-
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/resource"
 )
 
 type controlledExporter struct {
@@ -84,10 +82,7 @@ func TestPeriodicReaderOwnership(t *testing.T) {
 			sdkmetric.WithTimeout(10*time.Second),
 		)
 		cleanupReader(t, reader)
-		res, err := newResource(ResourceSettings{NodeName: "node-test", Environment: "test"}, uuid.NewV7)
-		if err != nil {
-			t.Fatal(err)
-		}
+		res := resource.Environment()
 		r, err := recorderWithReader(res, reader)
 		if err != nil {
 			t.Fatal(err)
@@ -139,6 +134,40 @@ func TestPeriodicReaderOwnership(t *testing.T) {
 	})
 }
 
+func TestPeriodicReaderSDKEnvironment(t *testing.T) {
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "1000")
+	t.Setenv("OTEL_METRIC_EXPORT_TIMEOUT", "200")
+	synctest.Test(t, func(t *testing.T) {
+		exporter := &controlledExporter{gate: make(chan struct{})}
+		reader := sdkmetric.NewPeriodicReader(exporter)
+		cleanupReader(t, reader)
+		res := resource.Environment()
+		if _, err := recorderWithReader(res, reader); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(999 * time.Millisecond)
+		synctest.Wait()
+		if exporter.exports.Load() != 0 {
+			t.Fatal("экспорт раньше настроенного интервала")
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if exporter.exports.Load() != 1 || exporter.active.Load() != 1 {
+			t.Fatal("интервал из окружения SDK не применён")
+		}
+		time.Sleep(199 * time.Millisecond)
+		synctest.Wait()
+		if exporter.active.Load() != 1 {
+			t.Fatal("экспорт отменён раньше timeout")
+		}
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		if exporter.active.Load() != 0 {
+			t.Fatal("timeout из окружения SDK не применён")
+		}
+	})
+}
+
 func TestPeriodicReaderShutdownCancelsInflight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		exporter := &controlledExporter{gate: make(chan struct{})}
@@ -148,10 +177,7 @@ func TestPeriodicReaderShutdownCancelsInflight(t *testing.T) {
 			sdkmetric.WithTimeout(time.Minute),
 		)
 		cleanupReader(t, reader)
-		res, err := newResource(ResourceSettings{NodeName: "node-test", Environment: "test"}, uuid.NewV7)
-		if err != nil {
-			t.Fatal(err)
-		}
+		res := resource.Environment()
 		r, err := recorderWithReader(res, reader)
 		if err != nil {
 			t.Fatal(err)
@@ -205,18 +231,12 @@ func TestPipelineShutdownInflight(t *testing.T) {
 			sdkmetric.WithTimeout(10*time.Second),
 		)
 		cleanupReader(t, reader)
-		res, err := newResource(ResourceSettings{NodeName: "node-test", Environment: "test"}, uuid.NewV7)
-		if err != nil {
-			t.Fatal(err)
-		}
+		res := resource.Environment()
 		r, err := recorderWithReader(res, reader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		p := &Pipeline{
-			Recorder:  r,
-			transport: &http.Transport{},
-		}
+		p := &Pipeline{Recorder: r}
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if exporter.exports.Load() != 1 || exporter.active.Load() != 1 {

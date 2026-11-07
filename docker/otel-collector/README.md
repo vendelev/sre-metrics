@@ -61,8 +61,8 @@ Grafana и SigNoz доступны через существующий Traefik �
 
 ```sh
 export ENTERPRISE_NAME=metrics
-export USER_AUTH_NODE_NAME=node-1
-export USER_AUTH_ENVIRONMENT=development
+test -e .env || cp .env.example .env
+# Настройте ноду, окружение и остальные значения в .env.
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps -a
@@ -72,8 +72,10 @@ docker compose logs --tail=100 user-login-metrics otel-collector signoz-migrate
 `user-login-metrics` собирается из [docker/metrics/Dockerfile](../metrics/Dockerfile)
 с контекстом корня проекта; версия Go должна совпадать с `../../module/go.mod`.
 Настройки сервиса — в его [README](../../module/user-login/README.md#настройки).
-Compose задаёт OTLP endpoint, интервал экспорта 10 секунд по умолчанию и бюджет остановки
-10 секунд; Docker ждёт 15 секунд перед принудительным завершением.
+Compose передаёт сервису корневой `.env` через `env_file`; пример всех настроек —
+в [.env.example](../../.env.example). В примере заданы OTLP endpoint, интервал экспорта
+10 секунд и бюджет остановки 10 секунд; Docker ждёт 15 секунд перед принудительным завершением.
+Экспорт использует стандартные `OTEL_*`; интервалы и timeout SDK в `.env` указаны в миллисекундах.
 Порты API событий, OTLP и хранилищ на хост не публикуются.
 Отправляйте события из доверенной сети на `http://user-login-metrics:8080/events`.
 Внутри сети используйте DNS-имена сервисов Compose (`otel-collector`, `user-login-metrics`),

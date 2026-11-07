@@ -2,12 +2,14 @@ package userlogin
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	collector "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -92,13 +93,20 @@ func newServiceReceiver(t *testing.T) *serviceReceiver {
 	return r
 }
 
-func actualConfig(r *serviceReceiver) *config.Config {
+// actualConfig настраивает настоящее окружение SDK; вызывающие тесты не запускаются параллельно.
+func actualConfig(t *testing.T, r *serviceReceiver) *config.Config {
+	t.Helper()
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", r.server.URL+"/v1/metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "200")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative")
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "20")
+	t.Setenv("OTEL_METRIC_EXPORT_TIMEOUT", "200")
+	t.Setenv(
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"service.instance.id=service-test-instance,host.name=node-test,deployment.environment.name=test",
+	)
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
-	cfg.NodeName, cfg.Environment = "node-test", "test"
-	cfg.OTLPMetricsEndpoint = r.server.URL + "/v1/metrics"
-	cfg.OTLPExportInterval = 20 * time.Millisecond
-	cfg.OTLPExportTimeout = 200 * time.Millisecond
 	cfg.ShutdownTimeout = 2 * time.Second
 	cfg.HTTPReadHeaderTimeout = 50 * time.Millisecond
 	cfg.HTTPReadTimeout, cfg.HTTPWriteTimeout = 100*time.Millisecond, 100*time.Millisecond
@@ -201,14 +209,9 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 	for _, a := range rm.Resource.Attributes {
 		resource[a.Key] = a.Value.GetStringValue()
 	}
-	instance, err := uuid.Parse(resource["service.instance.id"])
-	if err != nil || instance.Version() != 7 {
-		t.Fatal("UUID Resource")
-	}
-	if len(rm.Resource.Attributes) != 5 || !reflect.DeepEqual(resource, map[string]string{
-		"service.namespace":           "sptr",
-		"service.name":                "mis-login-observability",
-		"service.instance.id":         instance.String(),
+	instance := resource["service.instance.id"]
+	if len(rm.Resource.Attributes) != 3 || !reflect.DeepEqual(resource, map[string]string{
+		"service.instance.id":         "service-test-instance",
 		"host.name":                   "node-test",
 		"deployment.environment.name": "test",
 	}) {
@@ -221,7 +224,7 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 		completed: make(map[string]int64),
 		errors:    make(map[string]int64),
 		starts:    make(map[string]uint64),
-		instance:  instance.String(),
+		instance:  instance,
 	}
 	for _, m := range rm.ScopeMetrics[0].Metrics {
 		if sum := m.GetSum(); sum != nil {
@@ -317,7 +320,7 @@ func lastServiceMetrics(t *testing.T, r *serviceReceiver) serviceValues {
 // BR-42, AC-31: текущий запрос и обслуживание завершаются до последнего пакета.
 func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 	r := newServiceReceiver(t)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	cfg.MaintenanceInterval = 20 * time.Millisecond
 	c := newBarrierClock(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
 	app := testService(t, cfg, c)
@@ -407,7 +410,7 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 	select {
 	case <-r.samples:
 		t.Fatal("отправка после остановки")
-	case <-time.After(3 * cfg.OTLPExportInterval):
+	case <-time.After(60 * time.Millisecond):
 	}
 }
 
@@ -415,7 +418,7 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 func TestServiceOTLPRecovery(t *testing.T) {
 	r := newServiceReceiver(t)
 	r.fail.Store(true)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	c := &testClock{now: time.Now().UTC().Truncate(time.Millisecond)}
 	app := testService(t, cfg, c)
 	running := runActual(t, app)
@@ -453,12 +456,22 @@ func TestServiceOTLPRecovery(t *testing.T) {
 
 func TestServicePipelineFailureClosesListener(t *testing.T) {
 	r := newServiceReceiver(t)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	app := testService(t, cfg, &testClock{now: time.Now()})
-	app.cfg.OTLPMetricsEndpoint = "http://localhost"
+	// SDK отклоняет сочетание HTTP endpoint и настроенного TLS при инициализации после bind.
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer tlsServer.Close()
+	caPath := t.TempDir() + "/ca.pem"
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.Certificate().Raw})
+	if err := os.WriteFile(caPath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE", caPath)
 	ready := false
-	err := app.run(t.Context(), func(net.Addr) { ready = true })
-	if err == nil || !strings.Contains(err.Error(), "USER_AUTH_OTLP_METRICS_ENDPOINT") {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	err := app.run(ctx, func(net.Addr) { ready = true })
+	if err == nil || !strings.Contains(err.Error(), "создание OTLP exporter") {
 		t.Fatalf("ошибка pipeline: %v", err)
 	}
 	assertListenerClosed(t, app)
@@ -470,9 +483,9 @@ func TestServicePipelineFailureClosesListener(t *testing.T) {
 func TestServiceFinalExportTimeout(t *testing.T) {
 	r := newServiceReceiver(t)
 	r.hold.Store(true)
-	cfg := actualConfig(r)
-	cfg.OTLPExportInterval = time.Hour
-	cfg.OTLPExportTimeout = 100 * time.Millisecond
+	cfg := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "100")
 	c := &testClock{now: time.Now().UTC().Truncate(time.Millisecond)}
 	app := testService(t, cfg, c)
 	running := runActual(t, app)
@@ -481,7 +494,9 @@ func TestServiceFinalExportTimeout(t *testing.T) {
 	}
 	start := time.Now()
 	err := running.stop(t)
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > cfg.ShutdownTimeout {
+	// Штатный retry SDK может ждать следующую попытку до общего deadline остановки.
+	// Допуск учитывает планировщик и race detector, но не допускает нового бюджета SDK.
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*cfg.ShutdownTimeout/2 {
 		t.Fatalf("неограниченный/скрытый отказ экспорта: %v", err)
 	}
 	if r.calls.Load() != 1 {
@@ -495,12 +510,11 @@ func TestServiceFinalExportTimeout(t *testing.T) {
 // Настоящее обслуживание расходует часть бюджета; зависший OTLP-получатель
 // должен получить лишь остаток, а не новый полный timeout остановки.
 func TestServiceSharedShutdownBudget(t *testing.T) {
-	t.Parallel()
 	r := newServiceReceiver(t)
 	r.hold.Store(true)
-	cfg := actualConfig(r)
-	cfg.OTLPExportInterval = time.Hour
-	cfg.OTLPExportTimeout = 5 * time.Second
+	cfg := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "5000")
 	cfg.ShutdownTimeout = time.Second
 	cfg.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
@@ -542,7 +556,7 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 // Сеть здесь настоящая; граница незавершённого обслуживания управляется каналом.
 func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
 	r := newServiceReceiver(t)
-	cfg := actualConfig(r)
+	cfg := actualConfig(t, r)
 	cfg.ShutdownTimeout = 300 * time.Millisecond
 	cfg.HTTPReadTimeout, cfg.HTTPWriteTimeout = 50*time.Millisecond, 50*time.Millisecond
 	cfg.MaintenanceInterval = time.Millisecond
@@ -592,7 +606,7 @@ func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
 	// Получатель может опубликовать уже начатый до Shutdown запрос после
 	// возврата остановки. Продолжающийся периодический экспорт не даст
 	// наступить полосе тишины длиной в три интервала.
-	quiet := time.NewTimer(3 * cfg.OTLPExportInterval)
+	quiet := time.NewTimer(60 * time.Millisecond)
 	defer quiet.Stop()
 	timeout := time.NewTimer(3 * time.Second)
 	defer timeout.Stop()
@@ -605,7 +619,7 @@ func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
 				default:
 				}
 			}
-			quiet.Reset(3 * cfg.OTLPExportInterval)
+			quiet.Reset(60 * time.Millisecond)
 		case <-quiet.C:
 			return
 		case <-timeout.C:

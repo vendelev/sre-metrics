@@ -74,9 +74,10 @@ API доступен доверенным отправителям как `http:
 После сборки для ручного запуска на хосте явно ограничьте адрес loopback:
 
 ```bash
-USER_AUTH_LISTEN_ADDR=127.0.0.1:8080 \
-USER_AUTH_NODE_NAME=node-1 USER_AUTH_ENVIRONMENT=development \
-USER_AUTH_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-login
+USER_LOGIN_LISTEN_ADDR=127.0.0.1:8080 \
+OTEL_SERVICE_NAME=mis-login-observability \
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-login
 ```
 
 Для свободного порта укажите `127.0.0.1:0`; фактический адрес выводится в JSON-логе.
@@ -88,8 +89,9 @@ USER_AUTH_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-logi
 ```bash
 docker network create --internal metrics-local
 docker run --rm --name user-login --network metrics-local \
-  -e USER_AUTH_NODE_NAME=node-1 -e USER_AUTH_ENVIRONMENT=development \
-  -e USER_AUTH_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics \
+  -e OTEL_SERVICE_NAME=mis-login-observability \
+  -e OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
+  -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics \
   metrics-user-login:local
 # В другом терминале:
 docker stop --time 12 user-login
@@ -98,60 +100,77 @@ docker network rm metrics-local
 
 ### Настройки
 
-[Конфигурация](internal/presentation/config/config.go) загружается один раз при старте.
-Нода, окружение и полный metrics endpoint обязательны. Экспорт запускается после bind,
+[Конфигурация](internal/presentation/config/config.go) загружается один раз при старте;
+разбор env по тегам полей выполняет `caarlos0/env/v11`, предметные ограничения — `Config.Validate`.
+Настройки экспорта читает SDK из стандартных `OTEL_*`. Экспорт запускается после bind,
 первый периодический сбор — через настроенный интервал. Примеры endpoint условные:
 реальный получатель и его доступность обеспечиваются развёртыванием. Его недоступность
 не мешает приёму событий, но диагностируется, включая ошибку последнего экспорта при остановке.
-Явно заданные пустые или некорректные значения — ошибка, а не повод использовать умолчание.
-Длительности задаются с единицей: `500ms`, `2s`, `1m`.
+Пустые настройки сервиса сохраняют умолчания. Нода и окружение задаются только
+через `OTEL_RESOURCE_ATTRIBUTES`. Формат адреса прослушивания
+проверяется при открытии listener, а не при загрузке конфигурации.
+Длительности `USER_LOGIN_*` задаются с единицей: `500ms`, `2s`, `1m`;
+стандартные OTEL-интервалы и timeout — целыми миллисекундами без суффикса.
+
+Все переменные сервиса и пример стандартных настроек SDK собраны в
+[.env.example](../../.env.example). Для Compose скопируйте его в корневой `.env`:
+сервис получает файл через `env_file`. Сам Go-процесс `.env` не читает;
+при запуске бинарника передавайте настройки через окружение процесса.
 
 | Env                                  | Умолчание | Назначение                                                                |
 |--------------------------------------|-----------|---------------------------------------------------------------------------|
-| `USER_AUTH_LISTEN_ADDR`              | `:8080`   | Адрес `host:port`, IPv6 — `[адрес]:port`; порт 0 выбирается автоматически |
-| `USER_AUTH_MAX_SCENARIOS`            | `10000`   | Общий лимит хранимых сценариев                                            |
-| `USER_AUTH_MAX_EVENTS_PER_SCENARIO`  | `32`      | Лимит уникальных событий записи                                           |
-| `USER_AUTH_MAINTENANCE_INTERVAL`     | `1s`      | Период обслуживания                                                       |
-| `USER_AUTH_HTTP_READ_HEADER_TIMEOUT` | `1s`      | Чтение заголовков                                                         |
-| `USER_AUTH_HTTP_READ_TIMEOUT`        | `2s`      | Чтение всего запроса, включая тело                                        |
-| `USER_AUTH_HTTP_WRITE_TIMEOUT`       | `2s`      | Тайм-аут записи ответа                                                    |
-| `USER_AUTH_HTTP_IDLE_TIMEOUT`        | `30s`     | Ожидание следующего запроса keep-alive                                    |
-| `USER_AUTH_SHUTDOWN_TIMEOUT`         | `10s`     | Единый бюджет остановки                                                   |
-| `USER_AUTH_NODE_NAME`                | Нет       | Стабильная нода без пробельных и управляющих символов                     |
-| `USER_AUTH_ENVIRONMENT`              | Нет       | Окружение без пробельных и управляющих символов                           |
-| `USER_AUTH_OTLP_METRICS_ENDPOINT`    | Нет       | Полный http/https URL с точным путём `/v1/metrics`                        |
-| `USER_AUTH_OTLP_EXPORT_INTERVAL`     | `10s`     | Интервал периодического экспорта                                          |
-| `USER_AUTH_OTLP_EXPORT_TIMEOUT`      | `2s`      | Предел одной отправки                                                     |
+| `USER_LOGIN_LISTEN_ADDR`              | `:8080`   | Адрес `host:port`, IPv6 — `[адрес]:port`; порт 0 выбирается автоматически |
+| `USER_LOGIN_MAX_SCENARIOS`            | `10000`   | Общий лимит хранимых сценариев                                            |
+| `USER_LOGIN_MAX_EVENTS_PER_SCENARIO`  | `32`      | Лимит уникальных событий записи                                           |
+| `USER_LOGIN_MAINTENANCE_INTERVAL`     | `1s`      | Период обслуживания                                                       |
+| `USER_LOGIN_HTTP_READ_HEADER_TIMEOUT` | `1s`      | Чтение заголовков                                                         |
+| `USER_LOGIN_HTTP_READ_TIMEOUT`        | `2s`      | Чтение всего запроса, включая тело                                        |
+| `USER_LOGIN_HTTP_WRITE_TIMEOUT`       | `2s`      | Тайм-аут записи ответа                                                    |
+| `USER_LOGIN_HTTP_IDLE_TIMEOUT`        | `30s`     | Ожидание следующего запроса keep-alive                                    |
+| `USER_LOGIN_SHUTDOWN_TIMEOUT`         | `10s`     | Единый бюджет остановки                                                   |
+
+Экспорт настраивается через `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`, `OTEL_METRIC_EXPORT_INTERVAL` и
+`OTEL_METRIC_EXPORT_TIMEOUT`; значения для стенда приведены в `.env.example`.
+При отсутствии переменных действуют умолчания SDK: интервал `60000` мс,
+timeout reader `30000` мс и HTTP timeout `10000` мс. Общие `OTEL_EXPORTER_OTLP_*`
+поддерживаются SDK, но соответствующие metrics-specific переменные имеют приоритет.
+Для своего CA задайте `OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE` с путём к доступному
+PEM-файлу; в контейнере файл нужно отдельно смонтировать. Клиент и TLS настраивает SDK.
 
 Все числовые значения положительны. Интервал обслуживания не превышает `1m`;
 тайм-аут заголовков не превышает тайм-аут чтения. Перекрёстная формула бюджета остановки
 относительно HTTP-тайм-аутов не проверяется: остановка короче HTTP-тайм-аутов допустима
 и завершается принудительным закрытием соединений. Серверные timeout не меняют клиентский
 timeout 1 с из BR-22 и не прерывают произвольную выполняющуюся Go-функцию.
-Endpoint не дополняется автоматически; userinfo, query, fragment, кодирование пути и порт 0
-запрещены. HTTP допускается в доверенной сети; HTTPS использует проверку системными CA.
-Секретные headers, свои сертификаты и mTLS не поддерживаются.
+Config не разбирает и не проверяет `OTEL_*`: их обработка и умолчания принадлежат SDK.
+HTTPS использует проверку сертификатов. Отдельных `USER_LOGIN_*` для экспорта больше нет.
 
-Полный Resource задаётся через [ResourceSettings](internal/infrastructure/otel/settings.go):
-константы `service.namespace=sptr`, `service.name=mis-login-observability`, один UUID v7
-в `service.instance.id`, нода в `host.name` и окружение в `deployment.environment.name`.
-Автоопределения ноды нет. Поскольку SDK `WithResource` объединяет Resource с окружением,
-конфликтующие SDK-env отклоняются до создания SDK, даже если значение пустое.
-Точный перечень и основания версии — в
-[ConflictingEnvironment](internal/infrastructure/otel/environment.go), включая Resource-env,
-общие/metrics OTLP-настройки, интервалы, exemplars и влияющие экспериментальные режимы.
-Ошибка содержит только имя переменной. Окружение процесса не изменяется;
-глобальные provider, логгер и обработчик ошибок не подменяются. Это не изоляция от любых
-будущих SDK-env или системных настроек proxy/CA; concurrent env mutation не поддерживается.
+Имя сервиса задаётся через `OTEL_SERVICE_NAME`, namespace и остальные атрибуты — через
+`OTEL_RESOURCE_ATTRIBUTES`, как в `.env.example`. В коде имя и namespace не фиксируются;
+для существующего Collector сохраняйте `service.name=mis-login-observability`.
+Нода и окружение не передаются из Config: их читает SDK из `OTEL_RESOURCE_ATTRIBUTES`.
+`service.instance.id` также задаётся только через `OTEL_RESOURCE_ATTRIBUTES`;
+код не генерирует ID и не добавляет значение при его отсутствии в env.
+`OTEL_SERVICE_NAME` имеет приоритет над `service.name` в `OTEL_RESOURCE_ATTRIBUTES`.
+Уникальность `service.instance.id` обеспечивает развёртывание: используйте новый ID
+для каждого независимого экземпляра состояния, включая перезапуски.
+Автоопределения ноды нет. Остальные `OTEL_*` могут влиять на работу SDK;
+exemplars и View гистограммы задаются кодом. 
+Секреты и персональные данные нельзя включать в Resource.
+Окружение процесса не изменяется; глобальные provider, логгер и обработчик ошибок
+не подменяются. Конкурентное изменение env не поддерживается.
 
-[Prepare](internal/infrastructure/otel/recorder.go) фиксирует Resource и UUID без SDK.
+[Prepare](internal/infrastructure/otel/recorder.go) фиксирует Resource из окружения без запуска SDK.
 [StartPipeline](internal/infrastructure/otel/pipeline.go) после bind активирует тот же Recorder:
 один provider, один набор инструментов/View и один `PeriodicReader`, без production-`ManualReader`.
-Resource передаётся только в `Prepare`; `PipelineSettings` содержит лишь настройки экспорта.
+Resource передаётся только в `Prepare`; при активации настройки экспорта читает SDK из env.
 Создание reader уже запускает goroutine: владельцем становится сервис.
-Reader последовательно собирает и отправляет cumulative-данные; retry явно отключён,
-redirect не выполняется. Последний сбор уже входит в Shutdown; дополнительный flush не нужен.
-После reader закрывается собственный HTTP transport. Ошибки диагностируются сервисным
+Reader последовательно собирает и отправляет cumulative-данные; retry и redirect
+используют штатное поведение SDK и его HTTP-клиента. Последний сбор уже входит в Shutdown;
+дополнительный flush не нужен. Собственного HTTP transport у приложения нет;
+SDK v1.47.0 не гарантирует немедленное закрытие idle-соединений при Shutdown.
+Ошибки диагностируются сервисным
 логгером без тела ответа получателя; сбой не сбрасывает накопление и не блокирует приём событий.
 Сохраняемой очереди и гарантии доставки нет.
 
@@ -176,14 +195,15 @@ pipeline освобождает listener и частично созданные 
 Остановка линейна и ограничена одним общим deadline: закрыть listener для новых
 соединений → отменить планирование обслуживания → выполнить HTTP Shutdown в пределах
 срока, при неуспехе принудительно закрыть соединения → дождаться Serve и текущего
-обслуживания в пределах того же срока → завершить SDK и освободить transport.
+обслуживания в пределах того же срока → завершить SDK.
 Результаты двух фоновых задач публикуются через каналы завершения; отдельной задачи
 HTTP Shutdown нет. `Pipeline.Shutdown` передаётся оставшееся время: reader отменяет
 периодический вызов, дожидается его завершения, выполняет последний сбор/экспорт
-и освобождает exporter/transport. Даже при исчерпанном сроке команда освобождения
+и завершает exporter. Даже при исчерпанном сроке команда освобождения
 передаётся: вызов shutdown с истёкшим контекстом не гарантирует ни последней отправки,
 ни завершения внутренней очистки SDK. Дополнительный `ForceFlush` не нужен.
-Отправка дополнительно ограничена `USER_AUTH_OTLP_EXPORT_TIMEOUT`.
+HTTP timeout задаётся через `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`; повторы SDK
+ограничены контекстом операции, при остановке — оставшимся общим бюджетом.
 
 Финальный экспорт — best effort. При нештатной остановке возможна отправка неполного
 накопления; последние измерения могут быть потеряны. Ошибка незавершённой обработки

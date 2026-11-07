@@ -2,25 +2,73 @@ package otel
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func TestNewResourceUUIDError(t *testing.T) {
-	cause := errors.New("синтетический сбой генерации UUID")
-	res, err := newResource(
-		ResourceSettings{NodeName: "node-test", Environment: "test"},
-		func() (uuid.UUID, error) { return uuid.Nil, cause },
+func TestRecorderResourceFromEnvironment(t *testing.T) {
+	t.Setenv(
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"test.source=env,service.name=attributes-service,service.namespace=env-namespace,service.instance.id=env-instance,host.name=env-node,deployment.environment.name=env-environment",
 	)
-	if res != nil || !errors.Is(err, cause) {
-		t.Fatalf("ошибка создания ID потеряна: %v", err)
+	t.Setenv("OTEL_SERVICE_NAME", "env-service")
+	r, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := r.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	var collected metricdata.ResourceMetrics
+	if err := r.Reader().Collect(t.Context(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"test.source":                 "env",
+		"service.name":                "env-service",
+		"service.namespace":           "env-namespace",
+		"service.instance.id":         "env-instance",
+		"host.name":                   "env-node",
+		"deployment.environment.name": "env-environment",
+	} {
+		got, ok := collected.Resource.Set().Value(attribute.Key(key))
+		if !ok || got.AsString() != want {
+			t.Fatalf("атрибут %s: получено %v, ожидалось %s", key, got, want)
+		}
+	}
+}
+
+func TestResourceDoesNotGenerateInstanceID(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+	r, err := Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.resource.Set().Value("service.instance.id"); ok {
+		t.Fatal("service.instance.id создан без настройки окружения")
+	}
+}
+
+func TestResourceAttributesFromEnvironment(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "host.name=otel-node,deployment.environment.name=test")
+	r, err := Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"host.name": "otel-node", "deployment.environment.name": "test"} {
+		got, ok := r.resource.Set().Value(attribute.Key(key))
+		if !ok || got.AsString() != want {
+			t.Fatalf("атрибут %s из окружения: %v", key, got)
+		}
 	}
 }
 
 func TestPrepareDoesNotStartSDK(t *testing.T) {
-	r, err := Prepare(ResourceSettings{NodeName: "node-test", Environment: "test"})
+	r, err := Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +81,7 @@ func TestPrepareDoesNotStartSDK(t *testing.T) {
 }
 
 func TestPipelineRejectsLocalRecorder(t *testing.T) {
-	r, err := New(ResourceSettings{NodeName: "node-test", Environment: "test"})
+	r, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,27 +90,9 @@ func TestPipelineRejectsLocalRecorder(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	settings := pipelineSettings("http://localhost:4318/v1/metrics")
-	p, err := StartPipeline(t.Context(), r, settings, testLogger())
+	p, err := StartPipeline(t.Context(), r, testLogger())
 	cleanupPipeline(t, p)
 	if p != nil || err == nil {
 		t.Fatal("экспортный provider добавлен к локальному")
-	}
-}
-
-func TestPrepareInvalidSettings(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		settings ResourceSettings
-	}{
-		{name: "нет ноды", settings: ResourceSettings{Environment: "test"}},
-		{name: "нет окружения", settings: ResourceSettings{NodeName: "node-test"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if r, err := Prepare(test.settings); r != nil || err == nil {
-				t.Fatalf("приняты невалидные настройки Resource: %v", err)
-			}
-		})
 	}
 }
