@@ -283,11 +283,8 @@ func capture(t *testing.T, f *fixture) stateSnapshot {
 		events:    make(map[uuid.UUID]event.Request),
 	}
 	if err := f.store.Within(func(s contract.State) error {
-		if err := s.VisitScenarios(func(scenario *scenario.Scenario) error {
+		for scenario := range s.Scenarios() {
 			snapshot.scenarios[scenario.ID()] = scenario
-			return nil
-		}); err != nil {
-			return err
 		}
 		for i := 1; i <= 40; i++ {
 			id := uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i))

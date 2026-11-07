@@ -156,7 +156,7 @@ func newInstruments(provider *sdkmetric.MeterProvider) (*Recorder, error) {
 		technicalErrors: technicalErrors, duration: duration}, nil
 }
 
-// Record синхронно регистрирует только новые, проверенные хранилищем измерения.
+// Record синхронно регистрирует новые измерения, сформированные domain через TakeMeasurements.
 // Контекст намеренно пустой: локальная регистрация не зависит от отмены запроса,
 // не переносит данные запроса и не выполняет экспорт. Exemplars отключены.
 func (r *Recorder) Record(measurements dScenario.Measurements) {

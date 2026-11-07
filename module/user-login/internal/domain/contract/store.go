@@ -1,6 +1,9 @@
 package contract
 
 import (
+	"iter"
+	"time"
+
 	"github.com/google/uuid"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
@@ -9,7 +12,7 @@ import (
 // Store сериализует доступ к сценариям, событиям и регистрации новых измерений.
 type Store interface {
 	// Within вызывает operation синхронно в защищённом участке.
-	// Ошибка operation НЕ откатывает успешные Commit и DeleteScenario: самостоятельные
+	// Ошибка operation НЕ откатывает успешные Commit, RemoveRetained и DeleteScenario: самостоятельные
 	// эффекты deadline и retention сохраняются даже при отказе входящему событию.
 	// State действителен только до возврата operation; его нельзя сохранять, передавать
 	// другой goroutine или использовать для вложенного Within того же хранилища.
@@ -19,15 +22,20 @@ type Store interface {
 // State предоставляет операции хранения, но не выбирает порядок предметных решений.
 // Сущности и события копируются в обе стороны; карты и изменяемые ссылки хранилища не выдаются.
 type State interface {
+	// RemoveRetained удаляет сценарии с истёкшим retention вместе с их событиями,
+	// не изменяя накопленные метрики.
+	RemoveRetained(now time.Time) error
+
 	// FindScenario возвращает независимую копию сценария и признак его наличия.
 	FindScenario(id uuid.UUID) (*dScenario.Scenario, bool)
 
 	// FindEvent возвращает независимую копию принятого события из глобального индекса.
 	FindEvent(id uuid.UUID) (dEvent.Request, bool)
 
-	// VisitScenarios допускает обновление и удаление существующих записей из visit,
-	// но не создание новых. Каждый вызов visit получает независимую копию.
-	VisitScenarios(visit func(*dScenario.Scenario) error) error
+	// Scenarios перебирает независимые копии сценариев без гарантии порядка.
+	// Во время обхода допускаются обновление и удаление существующих записей,
+	// но не создание новых. Итератор действителен только внутри текущего Within.
+	Scenarios() iter.Seq[*dScenario.Scenario]
 
 	// CheckCapacity проверяет место для нового ID и, при необходимости, нового сценария.
 	CheckCapacity(scenarioID uuid.UUID) error

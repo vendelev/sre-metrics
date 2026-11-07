@@ -27,6 +27,20 @@ func (o *LoginObserver) Process(event *dEvent.Request) (ProcessResult, error) {
 	return result, operationError("обработка события", err)
 }
 
+func operationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, expected := range []error{
+		dError.ErrInvalidEvent, dError.ErrConflict, dScenario.ErrScenarioExpired, dError.ErrCapacityExceeded,
+	} {
+		if errors.Is(err, expected) {
+			return fmt.Errorf("%s: %w", operation, err)
+		}
+	}
+	return internalError(operation, err)
+}
+
 func equalEvents(a *dEvent.Request, b *dEvent.Request) bool {
 	sameIDs := a.EventID == b.EventID && a.ScenarioID == b.ScenarioID
 	sameFact := a.Source == b.Source && a.Type == b.Type && a.OccurredAt.Equal(b.OccurredAt)
@@ -40,7 +54,7 @@ func equalEvents(a *dEvent.Request, b *dEvent.Request) bool {
 }
 
 func processEvent(state dContract.State, event *dEvent.Request, now time.Time) (ProcessResult, error) {
-	if err := removeRetained(state, now); err != nil {
+	if err := state.RemoveRetained(now); err != nil {
 		return ProcessResult{}, err
 	}
 	if stored, ok := state.FindEvent(event.EventID); ok {

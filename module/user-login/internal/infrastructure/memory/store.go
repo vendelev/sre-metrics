@@ -3,7 +3,9 @@ package memory
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
@@ -75,6 +77,20 @@ type state struct {
 	store *Store
 }
 
+func (s *state) RemoveRetained(now time.Time) error {
+	if s.store == nil {
+		return dError.ErrInternal
+	}
+	for id, record := range s.store.scenarios {
+		if record.scenario.RetentionExpired(now) {
+			if err := s.DeleteScenario(id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *state) FindScenario(id uuid.UUID) (*dScenario.Scenario, bool) {
 	if s.store == nil {
 		return nil, false
@@ -94,18 +110,19 @@ func (s *state) FindEvent(id uuid.UUID) (dEvent.Request, bool) {
 	return storeEvent.Clone(), ok
 }
 
-func (s *state) VisitScenarios(visit func(*dScenario.Scenario) error) error {
-	if s.store == nil || visit == nil {
-		return dError.ErrInternal
-	}
-	// Удаление текущей записи и обновление существующей допустимы при обходе map.
-	// Добавление записей из visit не допускается контрактом обхода.
-	for _, record := range s.store.scenarios {
-		if err := visit(record.scenario.Clone()); err != nil {
-			return err
+func (s *state) Scenarios() iter.Seq[*dScenario.Scenario] {
+	return func(yield func(*dScenario.Scenario) bool) {
+		if s.store == nil {
+			return
+		}
+		// Удаление и обновление существующих записей допустимы при обходе map.
+		// Добавление записей во время обхода запрещено контрактом.
+		for _, record := range s.store.scenarios {
+			if !yield(record.scenario.Clone()) {
+				return
+			}
 		}
 	}
-	return nil
 }
 
 func (s *state) CheckCapacity(scenarioID uuid.UUID) error {
@@ -130,9 +147,6 @@ func (s *state) Commit(
 	measurements dScenario.Measurements,
 ) error {
 	if s.store == nil || loginScenario == nil {
-		return dError.ErrInternal
-	}
-	if !validMeasurements(measurements) {
 		return dError.ErrInternal
 	}
 	entry, exists := s.store.scenarios[loginScenario.ID()]

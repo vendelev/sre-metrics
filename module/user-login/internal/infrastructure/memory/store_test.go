@@ -405,6 +405,120 @@ func TestMaintainIdempotenceAndRetention(t *testing.T) {
 	}
 }
 
+func TestRemoveRetained(t *testing.T) {
+	cases := []struct {
+		name   string
+		offset time.Duration
+		remove bool
+	}{
+		{name: "до границы", offset: -time.Millisecond},
+		{name: "на границе", remove: true},
+		{name: "после границы", offset: time.Millisecond, remove: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, memory.DefaultLimits())
+			process(t, f, event(1, 100, event2.LoginSucceeded, f.base), nil)
+			process(t, f, event(2, 100, event2.LoginModeDetermined, f.base), nil)
+			process(t, f, event(3, 101, event2.LoginRejected, f.base), nil)
+			process(t, f, event(4, 102, event2.LoginStarted, f.base), nil)
+			before := snapshot(t, f)
+			now := f.base.Add(15*time.Minute + tt.offset)
+			var access contract.State
+			if err := f.store.Within(func(state contract.State) error {
+				access = state
+				if err := state.RemoveRetained(now); err != nil {
+					return err
+				}
+				return state.RemoveRetained(now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []int{100, 101} {
+				if got := scenario(t, f, id) == nil; got != tt.remove {
+					t.Fatalf("сценарий %d: удалён = %t, ожидалось %t", id, got, tt.remove)
+				}
+			}
+			for _, id := range []int{1, 2, 3} {
+				if got := !hasEvent(t, f, id); got != tt.remove {
+					t.Fatalf("событие %d: удалено = %t, ожидалось %t", id, got, tt.remove)
+				}
+			}
+			if active := scenario(t, f, 102); active == nil || active.Outcome() != "" || !hasEvent(t, f, 4) {
+				t.Fatal("очистка retention изменила активный сценарий или его событие")
+			}
+			if !reflect.DeepEqual(before, snapshot(t, f)) {
+				t.Fatal("очистка retention изменила накопленные измерения")
+			}
+			if err := access.RemoveRetained(now); !errors.Is(err, dError.ErrInternal) {
+				t.Fatalf("очистка вне защищённого участка: %v", err)
+			}
+		})
+	}
+}
+
+func TestScenarios(t *testing.T) {
+	f := newFixture(t, memory.DefaultLimits())
+	if err := f.store.Within(func(state contract.State) error {
+		for range state.Scenarios() {
+			t.Fatal("пустое хранилище вернуло сценарий")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		process(t, f, event(i, 100+i, event2.LoginModeDetermined, f.base), nil)
+	}
+	if err := f.store.Within(func(state contract.State) error {
+		for range state.Scenarios() {
+			break
+		}
+		seen := make(map[uuid.UUID]bool)
+		for scenario := range state.Scenarios() {
+			if seen[scenario.ID()] {
+				t.Fatal("обход вернул сценарий повторно")
+			}
+			seen[scenario.ID()] = true
+			if err := scenario.Fail(f.base); err != nil {
+				return err
+			}
+			stored, ok := state.FindScenario(scenario.ID())
+			if !ok || stored.Outcome() != "" {
+				t.Fatal("изменение копии из итератора проникло в хранилище без Commit")
+			}
+		}
+		if len(seen) != 3 {
+			t.Fatalf("обход вернул %d сценариев вместо 3", len(seen))
+		}
+		for scenario := range state.Scenarios() {
+			if err := scenario.Fail(f.base); err != nil {
+				return err
+			}
+			if err := state.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
+				return err
+			}
+			if err := state.DeleteScenario(scenario.ID()); err != nil {
+				return err
+			}
+		}
+		for range state.Scenarios() {
+			t.Fatal("удаление во время обхода оставило сценарии")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot(t, f).TechnicalErrors[event2.LoginModeCredentials]; got != 3 {
+		t.Fatalf("обновление во время обхода зарегистрировало %d ошибок вместо 3", got)
+	}
+	for i := 1; i <= 3; i++ {
+		if hasEvent(t, f, i) {
+			t.Fatal("удаление во время обхода оставило событие в индексе")
+		}
+	}
+}
+
 func TestStoreCopiesAndNoUniversalRollback(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	e := event(1, 100, event2.LoginModeDetermined, f.base)
@@ -450,52 +564,6 @@ func TestStoreCopiesAndNoUniversalRollback(t *testing.T) {
 	}
 	if hasEvent(t, f, 1) || scenario(t, f, 100) != nil {
 		t.Fatal("удаление должно очищать и запись, и индекс")
-	}
-}
-
-// Ошибка одной фиксации не сохраняет ни отметки выдачи, ни агрегат, ни новый ID.
-func TestCommitRefusalIsAtomic(t *testing.T) {
-	cases := []struct {
-		name        string
-		measurement scenario2.Measurements
-	}{
-		{name: "неизвестный исход", measurement: scenario2.Measurements{Completion: "other"}},
-		{name: "неизвестный вариант ошибки", measurement: scenario2.Measurements{TechnicalErrorMode: "other"}},
-		{name: "неизвестный вариант длительности", measurement: scenario2.Measurements{
-			SuccessfulDuration: &scenario2.DurationObservation{Mode: "other", Duration: time.Second},
-		}},
-		{name: "отрицательное наблюдение", measurement: scenario2.Measurements{
-			SuccessfulDuration: &scenario2.DurationObservation{
-				Mode:     event2.LoginModeCredentials,
-				Duration: -time.Second,
-			},
-		}},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
-			process(t, f, event(1, 100, event2.LoginModeDetermined, f.base), nil)
-			before := snapshot(t, f)
-			err := f.store.Within(func(state contract.State) error {
-				s, _ := state.FindScenario(testID(100))
-				if err := s.Fail(f.base); err != nil {
-					return err
-				}
-				s.TakeMeasurements()
-				e := event(2, 100, event2.LoginFailed, f.base)
-				return state.Commit(s, e, tt.measurement)
-			})
-			if !errors.Is(err, dError.ErrInternal) {
-				t.Fatalf("некорректная фиксация: %v", err)
-			}
-			if scenario(t, f, 100).Outcome() != "" || hasEvent(t, f, 2) || !reflect.DeepEqual(before, snapshot(t, f)) {
-				t.Fatal("отказ частично сохранил сущность, ID или измерение")
-			}
-			process(t, f, event(2, 100, event2.LoginFailed, f.base), nil)
-			if snapshot(t, f).TechnicalErrors[event2.LoginModeCredentials] != 1 {
-				t.Fatal("отклонённая фиксация потеряла отметки выдачи")
-			}
-		})
 	}
 }
 
