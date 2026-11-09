@@ -86,8 +86,8 @@ func TestPipelineRejectsLocalRecorder(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := r.Shutdown(context.Background()); err != nil {
-			t.Error(err)
+		if shutdownErr := r.Shutdown(context.Background()); shutdownErr != nil {
+			t.Error(shutdownErr)
 		}
 	})
 	p, err := StartPipeline(t.Context(), r, testLogger())

@@ -256,8 +256,8 @@ func TestOperationTimeInsideLock(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := observer.Process(event(2, 100, event2.LoginSucceeded, f.base))
-		result <- err
+		_, processErr := observer.Process(event(2, 100, event2.LoginSucceeded, f.base))
+		result <- processErr
 	}()
 	await(t, entered)
 	if clock.calls.Load() != 0 {

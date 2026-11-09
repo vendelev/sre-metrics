@@ -7,10 +7,13 @@ down:
 	docker compose down
 
 lint:
+	cd module && golangci-lint run ./...
+
+lint-fix:
 	golines --base-formatter=goimports -m 120 -w ./module
 	cd module && golangci-lint run ./... --fix
 
-test:
+test: lint
 	cd module && golangci-lint run ./...
 	go -C module test -cover -race ./...
 
