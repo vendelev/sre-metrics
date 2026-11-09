@@ -91,7 +91,7 @@ docker network create --internal metrics-local
 docker run --rm --name user-login --network metrics-local \
   -e OTEL_SERVICE_NAME=mis-login-observability \
   -e OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
-  -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics \
+  -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://metrics-otel-collector:4318/v1/metrics \
   metrics-user-login:local
 # В другом терминале:
 docker stop --time 12 user-login

@@ -21,4 +21,4 @@ scrape_configs:
     honor_labels: true
     sample_limit: 10000
     static_configs:
-      - targets: ["otel-collector:8889"]
+      - targets: ["metrics-otel-collector:8889"]

@@ -8,7 +8,7 @@
 ## Потоки данных
 
 - Метрики сценариев: HTTP-события на `user-login-metrics:8080/events` → SDK user-login → OTLP/HTTP
-  `otel-collector:4318/v1/metrics` → Prometheus exporter `otel-collector:8889`
+  `metrics-otel-collector:4318/v1/metrics` → Prometheus exporter `metrics-otel-collector:8889`
   → scrape Prometheus → recording rules → Grafana.
 - Копия метрик: основной Collector → `signoz-collector:4317` → ClickHouse SigNoz.
 - Трейсы внешних приложений: основной Collector → Tempo и SigNoz Collector.
