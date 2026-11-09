@@ -13,9 +13,8 @@ lint-fix:
 	golines --base-formatter=goimports -m 120 -w ./module
 	cd module && golangci-lint run ./... --fix
 
-test: lint
-	cd module && golangci-lint run ./...
+test:
 	go -C module test -cover -race ./...
 
-build:
+build-user-login:
 	go -C module build -o ../bin/user-login ./user-login/cmd
