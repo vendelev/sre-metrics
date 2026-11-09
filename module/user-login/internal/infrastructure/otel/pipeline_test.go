@@ -285,8 +285,8 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, now := observerFor(t, p.Recorder)
-	if err := flush(t, p); err != nil {
-		t.Fatal(err)
+	if flushErr := flush(t, p); flushErr != nil {
+		t.Fatal(flushErr)
 	}
 	baseline := checkWire(t, receive(t, requests))
 	if baseline.instance != instance.AsString() {
@@ -317,8 +317,8 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	processExportEvent(t, o, 10, event.LoginFailed, now)
 	processExportEvent(t, o, 10, event.LoginModeDetermined, now)
 	failure.Store(true)
-	if err := flush(t, p); err == nil || strings.Contains(err.Error(), "synthetic-secret") {
-		t.Fatalf("ошибка отправки: %v", err)
+	if flushErr := flush(t, p); flushErr == nil || strings.Contains(flushErr.Error(), "synthetic-secret") {
+		t.Fatalf("ошибка отправки: %v", flushErr)
 	}
 	failed := checkWire(t, receive(t, requests))
 	if calls.Load() != 2 {
@@ -326,8 +326,8 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 	}
 	processExportEvent(t, o, 11, event.LoginRejected, now)
 	failure.Store(false)
-	if err := flush(t, p); err != nil {
-		t.Fatal(err)
+	if flushErr := flush(t, p); flushErr != nil {
+		t.Fatal(flushErr)
 	}
 	full := checkWire(t, receive(t, requests))
 	if full.completed["success"] != 5 || full.completed["technical_error"] != 1 || full.completed["rejected"] != 1 ||
@@ -345,8 +345,8 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 			t.Fatal("сброс start timestamp")
 		}
 	}
-	if err := flush(t, p); err != nil {
-		t.Fatal(err)
+	if flushErr := flush(t, p); flushErr != nil {
+		t.Fatal(flushErr)
 	}
 	repeated := checkWire(t, receive(t, requests))
 	if !reflect.DeepEqual(repeated.completed, full.completed) || !reflect.DeepEqual(repeated.starts, full.starts) ||
@@ -355,8 +355,8 @@ func TestPipelineOTLPHTTP(t *testing.T) {
 		!reflect.DeepEqual(repeated.histogram.BucketCounts, full.histogram.BucketCounts) {
 		t.Fatal("повторный сбор изменил накопление")
 	}
-	if err := p.Shutdown(t.Context()); err != nil {
-		t.Fatal(err)
+	if shutdownErr := p.Shutdown(t.Context()); shutdownErr != nil {
+		t.Fatal(shutdownErr)
 	}
 	finalRequest := receive(t, requests)
 	final := checkWire(t, finalRequest)

@@ -20,6 +20,8 @@ linters:
         - gochecknoinits
         - sloglint
         - errorlint
+        - nilerr
+        - bodyclose
     exclusions:
         rules:
             -   path: '_test\.go$'
@@ -27,6 +29,49 @@ linters:
                     - goconst
                     - gocyclo
     settings:
+        staticcheck:
+            checks:
+                - all
+        govet:
+            enable:
+                - appends
+                - asmdecl
+                - assign
+                - atomic
+                - bools
+                - buildtag
+                - cgocall
+                - composites
+                - copylocks
+                - defers
+                - directive
+                - errorsas
+                - framepointer
+                - hostport
+                - httpresponse
+                - ifaceassert
+                - inline
+                - lostcancel
+                - nilfunc
+                - printf
+                - shift
+                - sigchanyzer
+                - slog
+                - stdmethods
+                - stdversion
+                - stringintconv
+                - structtag
+                - testinggoroutine
+                - tests
+                - timeformat
+                - unmarshal
+                - unreachable
+                - unsafeptr
+                - unusedresult
+                - waitgroup
+                - shadow
+                - nilness
+                - unusedwrite
         gocritic:
             enabled-checks:
                 - hugeParam
