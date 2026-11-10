@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	event2 "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	scenario2 "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
@@ -96,25 +95,13 @@ func snapshot(t *testing.T, f *fixture) oteltest.Values {
 
 func scenario(t *testing.T, f *fixture, id int) *scenario2.Scenario {
 	t.Helper()
-	var result *scenario2.Scenario
-	if err := f.store.Within(func(state contract.State) error {
-		result, _ = state.FindScenario(testID(id))
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	result, _ := f.store.FindScenario(testID(id))
 	return result
 }
 
 func hasEvent(t *testing.T, f *fixture, id int) bool {
 	t.Helper()
-	var exists bool
-	if err := f.store.Within(func(state contract.State) error {
-		_, exists = state.FindEvent(testID(id))
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_, exists := f.store.FindEvent(testID(id))
 	return exists
 }
 
@@ -189,8 +176,9 @@ func TestProcessDeduplicationAndEquality(t *testing.T) {
 	}
 }
 
-// BR-37, BR-49, BR-55: точный повтор старого ID не проверяет возраст и deadline.
-func TestProcessAgeAndDeduplicationPriority(t *testing.T) {
+// BR-49, BR-55: точный повтор завершается до проверки deadline.
+// Возраст уже проверен при приёме и не зависит от ожидания в очереди.
+func TestProcessDeduplicationBeforeDeadline(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	e := event(1, 100, event2.LoginModeDetermined, f.base)
 	process(t, f, e, nil)
@@ -199,12 +187,6 @@ func TestProcessAgeAndDeduplicationPriority(t *testing.T) {
 	changed := e.Clone()
 	changed.ScenarioID = testID(101)
 	process(t, f, &changed, dError.ErrConflict)
-	newID := e.Clone()
-	newID.EventID = testID(2)
-	_, err := f.observer.Process(&newID)
-	if !errors.Is(err, dError.ErrInvalidEvent) || !errors.Is(err, dError.ErrEventTime) {
-		t.Fatalf("возраст должен сохранять обе категории: %v", err)
-	}
 	if got := scenario(t, f, 100).Outcome(); got != "" {
 		t.Fatalf("ранний возврат закрыл ожидание: %q", got)
 	}
@@ -214,19 +196,15 @@ func TestProcessAgeAndDeduplicationPriority(t *testing.T) {
 	}
 }
 
-func TestProcessNewEventAgeBoundaries(t *testing.T) {
+func TestProcessDoesNotRecheckAdmissionAge(t *testing.T) {
 	for _, offset := range []time.Duration{
 		-30*time.Minute - time.Millisecond, -30 * time.Minute, 30 * time.Second, 30*time.Second + time.Millisecond,
 	} {
 		t.Run(offset.String(), func(t *testing.T) {
 			f := newFixture(t, memory.DefaultLimits())
-			var want error
-			if offset < -30*time.Minute || offset > 30*time.Second {
-				want = dError.ErrInvalidEvent
-			}
-			process(t, f, event(1, 100, event2.LoginRejected, f.base.Add(offset)), want)
-			if (scenario(t, f, 100) != nil) != (want == nil) {
-				t.Fatal("отказ по возрасту сохранил запись или допустимый возраст не принят")
+			process(t, f, event(1, 100, event2.LoginRejected, f.base.Add(offset)), nil)
+			if scenario(t, f, 100) == nil {
+				t.Fatal("обработка повторно проверила возраст уже принятого события")
 			}
 		})
 	}
@@ -360,18 +338,19 @@ func TestProcessRetentionReleasesGlobalIDAndCapacity(t *testing.T) {
 }
 
 func TestProcessRetentionPersistsAfterRefusal(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
+	f := newFixture(t, memory.Limits{MaxScenarios: 2, MaxEventsPerScenario: 1})
 	old := event(1, 100, event2.LoginStarted, f.base.Add(-20*time.Minute))
 	process(t, f, old, nil)
+	process(t, f, event(2, 101, event2.LoginModeDetermined, f.base), nil)
 	f.clock.Set(f.base.Add(15 * time.Minute))
-	process(t, f, old, dError.ErrInvalidEvent)
+	process(t, f, event(3, 101, event2.LoginModeDetermined, f.clock.Now()), dError.ErrCapacityExceeded)
 	if scenario(t, f, 100) != nil || hasEvent(t, f, 1) {
-		t.Fatal("отказ по возрасту восстановил истёкшую историю")
+		t.Fatal("отказ по лимиту восстановил истёкшую историю")
 	}
-	if snapshot(t, f).Completed[scenario2.OutcomeUnknown] != 1 {
-		t.Fatal("очистка изменила агрегат")
+	if snapshot(t, f).Completed[scenario2.OutcomeUnknown] != 2 || hasEvent(t, f, 3) {
+		t.Fatal("очистка изменила агрегат или отказ по лимиту не сохранил expiry")
 	}
-	process(t, f, event(2, 100, event2.LoginSucceeded, f.clock.Now()), nil)
+	process(t, f, event(4, 100, event2.LoginSucceeded, f.clock.Now()), nil)
 }
 
 func TestMaintainIdempotenceAndRetention(t *testing.T) {
@@ -424,15 +403,10 @@ func TestRemoveRetained(t *testing.T) {
 			process(t, f, event(4, 102, event2.LoginStarted, f.base), nil)
 			before := snapshot(t, f)
 			now := f.base.Add(15*time.Minute + tt.offset)
-			var access contract.State
-			if err := f.store.Within(func(state contract.State) error {
-				access = state
-				if err := state.RemoveRetained(now); err != nil {
-					return err
+			for range 2 {
+				if err := f.store.RemoveRetained(now); err != nil {
+					t.Fatal(err)
 				}
-				return state.RemoveRetained(now)
-			}); err != nil {
-				t.Fatal(err)
 			}
 			for _, id := range []int{100, 101} {
 				if got := scenario(t, f, id) == nil; got != tt.remove {
@@ -450,64 +424,53 @@ func TestRemoveRetained(t *testing.T) {
 			if !reflect.DeepEqual(before, snapshot(t, f)) {
 				t.Fatal("очистка retention изменила накопленные измерения")
 			}
-			if err := access.RemoveRetained(now); !errors.Is(err, dError.ErrInternal) {
-				t.Fatalf("очистка вне защищённого участка: %v", err)
-			}
 		})
 	}
 }
 
 func TestScenarios(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
-	if err := f.store.Within(func(state contract.State) error {
-		for range state.Scenarios() {
-			t.Fatal("пустое хранилище вернуло сценарий")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	for range f.store.Scenarios() {
+		t.Fatal("пустое хранилище вернуло сценарий")
 	}
 	for i := 1; i <= 3; i++ {
 		process(t, f, event(i, 100+i, event2.LoginModeDetermined, f.base), nil)
 	}
-	if err := f.store.Within(func(state contract.State) error {
-		for range state.Scenarios() {
-			break
+	count := 0
+	for range f.store.Scenarios() {
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatal("досрочное завершение обхода не сработало")
+	}
+	seen := make(map[uuid.UUID]bool)
+	for scenario := range f.store.Scenarios() {
+		if seen[scenario.ID()] {
+			t.Fatal("обход вернул сценарий повторно")
 		}
-		seen := make(map[uuid.UUID]bool)
-		for scenario := range state.Scenarios() {
-			if seen[scenario.ID()] {
-				t.Fatal("обход вернул сценарий повторно")
-			}
-			seen[scenario.ID()] = true
-			if err := scenario.Fail(f.base); err != nil {
-				return err
-			}
-			stored, ok := state.FindScenario(scenario.ID())
-			if !ok || stored.Outcome() != "" {
-				t.Fatal("изменение копии из итератора проникло в хранилище без Commit")
-			}
+		seen[scenario.ID()] = true
+		stored, ok := f.store.FindScenario(scenario.ID())
+		if !ok || stored != scenario {
+			t.Fatal("итератор и поиск должны возвращать один хранимый сценарий")
 		}
-		if len(seen) != 3 {
-			t.Fatalf("обход вернул %d сценариев вместо 3", len(seen))
+	}
+	if len(seen) != 3 {
+		t.Fatalf("обход вернул %d сценариев вместо 3", len(seen))
+	}
+	for scenario := range f.store.Scenarios() {
+		if err := scenario.Fail(f.base); err != nil {
+			t.Fatal(err)
 		}
-		for scenario := range state.Scenarios() {
-			if err := scenario.Fail(f.base); err != nil {
-				return err
-			}
-			if err := state.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
-				return err
-			}
-			if err := state.DeleteScenario(scenario.ID()); err != nil {
-				return err
-			}
+		if err := f.store.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
+			t.Fatal(err)
 		}
-		for range state.Scenarios() {
-			t.Fatal("удаление во время обхода оставило сценарии")
+		if err := f.store.DeleteScenario(scenario.ID()); err != nil {
+			t.Fatal(err)
 		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	}
+	for range f.store.Scenarios() {
+		t.Fatal("удаление во время обхода оставило сценарии")
 	}
 	if got := snapshot(t, f).TechnicalErrors[event2.LoginModeCredentials]; got != 3 {
 		t.Fatalf("обновление во время обхода зарегистрировало %d ошибок вместо 3", got)
@@ -519,47 +482,30 @@ func TestScenarios(t *testing.T) {
 	}
 }
 
-func TestStoreCopiesAndNoUniversalRollback(t *testing.T) {
+func TestStoreScenarioOwnershipAndEventCopies(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	e := event(1, 100, event2.LoginModeDetermined, f.base)
 	process(t, f, e, nil)
-	var access contract.State
-	errExpected := errors.New("учебный отказ после фиксации")
-	if err := f.store.Within(func(state contract.State) error {
-		access = state
-		stored, _ := state.FindEvent(e.EventID)
-		*stored.AuthMode = event2.LoginModeExistingSession
-		s, _ := state.FindScenario(e.ScenarioID)
-		if err := s.Fail(f.base); err != nil {
-			return err
-		}
-		if err := state.Commit(s, nil, s.TakeMeasurements()); err != nil {
-			return err
-		}
-		if err := s.Start(f.base, f.base); err != nil {
-			return err
-		}
-		return errExpected
-	}); !errors.Is(err, errExpected) {
+	storedEvent, _ := f.store.FindEvent(e.EventID)
+	*storedEvent.AuthMode = event2.LoginModeExistingSession
+	s := scenario(t, f, 100)
+	if err := s.Fail(f.base); err != nil {
 		t.Fatal(err)
 	}
-	stored := scenario(t, f, 100)
-	if stored.Outcome() != scenario2.OutcomeTechnicalError {
-		t.Fatal("ошибка callback откатила успешную фиксацию")
+	if stored := scenario(t, f, 100); stored != s || stored.Outcome() != scenario2.OutcomeTechnicalError {
+		t.Fatal("поиск вернул копию вместо хранимого сценария")
 	}
-	if _, ok := stored.StartedAt(); ok {
-		t.Fatal("изменение сущности после Commit проникло в память")
+	if err := f.store.Commit(s, nil, s.TakeMeasurements()); err != nil {
+		t.Fatal(err)
+	}
+	if scenario(t, f, 100) != s {
+		t.Fatal("Commit заменил хранимую сущность копией")
 	}
 	process(t, f, e, nil)
 	if got := snapshot(t, f).TechnicalErrors[event2.LoginModeCredentials]; got != 1 {
 		t.Fatal("сущность и изменение счётчика ошибок не согласованы")
 	}
-	if err := access.CheckCapacity(e.ScenarioID); !errors.Is(err, dError.ErrInternal) {
-		t.Fatal("отозванный State разрешил работу вне защищённого участка")
-	}
-	if err := f.store.Within(
-		func(state contract.State) error { return state.DeleteScenario(e.ScenarioID) },
-	); err != nil {
+	if err := f.store.DeleteScenario(e.ScenarioID); err != nil {
 		t.Fatal(err)
 	}
 	if hasEvent(t, f, 1) || scenario(t, f, 100) != nil {

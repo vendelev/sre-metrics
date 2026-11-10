@@ -54,26 +54,6 @@ func New(id uuid.UUID) *Scenario {
 	return &Scenario{id: id}
 }
 
-// Clone возвращает независимую копию фактов и отметок выданных измерений.
-// Изменение копии не меняет сохранённую сущность.
-func (s *Scenario) Clone() *Scenario {
-	scenario := *s
-	scenario.startedAt = cloneValue(s.startedAt)
-	scenario.authMode = cloneValue(s.authMode)
-	scenario.succeededAt = cloneValue(s.succeededAt)
-	scenario.firstReceivedAt = cloneValue(s.firstReceivedAt)
-	scenario.closedAt = cloneValue(s.closedAt)
-	return &scenario
-}
-
-func cloneValue[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	t := *value
-	return &t
-}
-
 // Start сохраняет исходный момент начала входа.
 // Сначала проверяет конфликт, затем закрывает прежнее истёкшее ожидание.
 // Недостающее начало после unknown даёт ErrScenarioExpired.

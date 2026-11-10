@@ -19,12 +19,14 @@ type rawEvent struct {
 	Mode       *string `json:"mode"`
 }
 
-func decodeEvent(body io.Reader) (dEvent.Request, error) {
-	decoder := json.NewDecoder(body)
+func decodeEvent(body io.Reader, now time.Time) (dEvent.Request, error) {
 	var request rawEvent
+	decoder := json.NewDecoder(body)
+
 	if err := decoder.Decode(&request); err != nil {
 		return dEvent.Request{}, err
 	}
+
 	// В теле допускается только один JSON-объект и пробелы после него.
 	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
 		return dEvent.Request{}, errors.New("после события ожидается конец тела")
@@ -40,9 +42,9 @@ func decodeEvent(body io.Reader) (dEvent.Request, error) {
 		return dEvent.Request{}, errors.New("невалидное id сценария")
 	}
 
-	occurredAt, err := time.Parse("2006-01-02T15:04:05.000Z", request.OccurredAt)
+	occurredAt, err := dEvent.ParseTime(request.OccurredAt, now)
 	if err != nil {
-		return dEvent.Request{}, errors.New("невалидное время события")
+		return dEvent.Request{}, err
 	}
 
 	source, err := dEvent.ParseSource(request.Source)

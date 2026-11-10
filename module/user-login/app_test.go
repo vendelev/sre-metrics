@@ -3,9 +3,12 @@ package userlogin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
@@ -82,6 +86,187 @@ func TestNewServiceSharesState(t *testing.T) {
 	}
 }
 
+// AC-50–AC-51: настоящая сборка отвечает до обработки, переполнение не ставит
+// событие в очередь, а штатный drain включает принятые события в последний OTLP-пакет.
+func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
+	r := newServiceReceiver(t)
+	cfg := actualConfig(t, r)
+	cfg.EventQueueSize = 2
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	c := newBarrierClock(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	app := testService(t, cfg, c)
+	now := c.Now()
+	// Предзагрузка проходит через тот же HTTP-handler до старта воркера. Барьер
+	// затем останавливает именно Process, а не проверку возраста нового запроса.
+	body := fmt.Sprintf(
+		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_started"}`,
+		now.Add(-5*time.Second).Format("2006-01-02T15:04:05.000Z"),
+	)
+	request := httptest.NewRequest("POST", "/events", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	app.server.Handler.ServeHTTP(response, request)
+	if response.Code != 202 || response.Body.Len() != 0 {
+		t.Fatalf("приём до обработки: %d %s", response.Code, response.Body.String())
+	}
+	c.armed.Store(true)
+	release := sync.OnceFunc(func() { close(c.release) })
+	defer release()
+	running := runActual(t, app)
+	waitSignal(t, c.entered)
+	if err := sendServiceEvent(t, running, 2, 100, "login_mode_determined", now, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := sendServiceEvent(t, running, 3, 100, "login_succeeded", now, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		at     time.Time
+		status int
+		body   string
+	}{
+		{"переполнение", now, 503, "{\"error\":\"overloaded\"}\n"},
+		{"возраст раньше вместимости", now.Add(-31 * time.Minute), 400, "{\"error\":\"invalid_event\"}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Timeout: time.Second}
+			defer client.CloseIdleConnections()
+			body := fmt.Sprintf(
+				`{"event_id":"019aabcd-0000-7000-8000-000000000004","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_failed"}`,
+				tc.at.Format("2006-01-02T15:04:05.000Z"),
+			)
+			response, err := client.Post(
+				"http://"+running.address.String()+"/events",
+				"application/json",
+				strings.NewReader(body),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			data, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != tc.status || string(data) != tc.body ||
+				response.Header.Get("Content-Type") != "application/json" {
+				t.Fatalf("ответ: %d %s", response.StatusCode, data)
+			}
+		})
+	}
+	if len(app.eventQueue.Events()) != 2 {
+		t.Fatal("отказ изменил очередь или HTTP дождался обработки")
+	}
+	shutdownStarted := make(chan struct{})
+	app.server.RegisterOnShutdown(func() { close(shutdownStarted) })
+	running.cancel()
+	waitSignal(t, shutdownStarted)
+	select {
+	case <-running.done:
+		t.Fatal("остановка не дождалась воркера")
+	default:
+	}
+	release()
+	if err := running.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	final := lastServiceMetrics(t, r)
+	if final.completed["success"] != 1 || final.completed["technical_error"] != 0 || final.histogram == nil ||
+		final.histogram.Count != 1 ||
+		final.histogram.GetSum() != 5 {
+		t.Fatalf("drain не включён в последний пакет: %+v", final)
+	}
+	if len(app.eventQueue.Events()) != 0 {
+		t.Fatal("штатная остановка оставила события")
+	}
+}
+
+func TestServiceQueuedProcessingFailure(t *testing.T) {
+	r := newServiceReceiver(t)
+	c := &testClock{now: time.Now()}
+	app := testService(t, actualConfig(t, r), c)
+	cause := errors.New("синтетический отказ обработки очереди")
+	var err error
+	app.observer, err = application.NewLoginObserver(failedStore{err: cause}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- app.run(t.Context(), nil) }()
+	if err := waitResult(t, done); !errors.Is(err, cause) {
+		t.Fatalf("сбой очереди не остановил сервис: %v", err)
+	}
+	assertListenerClosed(t, app)
+}
+
+func TestServiceQueueDrainDeadline(t *testing.T) {
+	r := newServiceReceiver(t)
+	cfg := actualConfig(t, r)
+	cfg.ShutdownTimeout = 100 * time.Millisecond
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	c := newBarrierClock(time.Now())
+	app := testService(t, cfg, c)
+	for id := 1; id <= 2; id++ {
+		if err := app.eventQueue.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.armed.Store(true)
+	release := sync.OnceFunc(func() { close(c.release) })
+	defer release()
+	running := runActual(t, app)
+	waitSignal(t, c.entered)
+	if err := running.stop(t); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("незавершённая очередь скрыта: %v", err)
+	}
+	if err := app.eventQueue.Enqueue(ingestEvent(3, dEvent.LoginSucceeded, c.testClock.Now())); err == nil {
+		t.Fatal("после остановки приём открыт")
+	}
+	release()
+	waitSignal(t, app.workerTask.done)
+	if app.workerTask.err != nil {
+		t.Fatalf("отмена по бюджету добавила ошибку воркера: %v", app.workerTask.err)
+	}
+	if len(app.eventQueue.Events()) != 1 {
+		t.Fatal("после исчерпания бюджета запущено следующее событие")
+	}
+}
+
+// AC-39: даже уже сохранённый ID не освобождается от проверки возраста при приёме.
+func TestServiceStoredDuplicateAge(t *testing.T) {
+	r := newServiceReceiver(t)
+	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
+	app := testService(t, actualConfig(t, r), c)
+	running := runActual(t, app)
+	at := c.Now().Add(-29 * time.Minute)
+	if err := sendServiceEvent(t, running, 1, 100, "login_succeeded", at, false); err != nil {
+		t.Fatal(err)
+	}
+	nextServiceMetrics(t, r, func(_ receivedMetrics, v serviceValues) bool { return v.completed["success"] == 1 })
+	c.Advance(2 * time.Minute)
+	body := fmt.Sprintf(
+		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_succeeded"}`,
+		at.Format("2006-01-02T15:04:05.000Z"),
+	)
+	request := httptest.NewRequest("POST", "/events", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	app.server.Handler.ServeHTTP(response, request)
+	if response.Code != 400 || response.Body.String() != "{\"error\":\"invalid_event\"}\n" {
+		t.Fatalf("старый сохранённый повтор: %d %s", response.Code, response.Body.String())
+	}
+	if err := running.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	if lastServiceMetrics(t, r).completed["success"] != 1 {
+		t.Fatal("старый повтор изменил бизнес-агрегат")
+	}
+}
+
 func testService(t *testing.T, cfg *config.Config, c contract.Clock) *service {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {
@@ -143,7 +328,7 @@ func TestRunBindFailure(t *testing.T) {
 		!strings.Contains(err.Error(), "запуск HTTP") {
 		t.Fatalf("ошибка занятого адреса потеряна: %v", err)
 	}
-	if ready || app.pipeline != nil || app.maintenanceTask != nil || app.serverTask != nil {
+	if ready || app.pipeline != nil || app.workerTask != nil || app.serverTask != nil {
 		t.Fatal("после ошибки bind запущены компоненты или объявлена готовность")
 	}
 }
@@ -165,11 +350,12 @@ func TestRunCancelledBeforeStartup(t *testing.T) {
 // Реальный memory не выдаёт произвольную техническую ошибку. Подмена существующего
 // domain.Store нужна только для проверки сохранения причины отказа обслуживания.
 type failedStore struct {
+	contract.Store
 	err    error
 	cancel context.CancelFunc
 }
 
-func (s failedStore) Within(func(contract.State) error) error {
+func (s failedStore) RemoveRetained(time.Time) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -269,7 +455,7 @@ func assertListenerClosed(t *testing.T, app *service) {
 // Проверка внутренних фаз не требует внедряемого сбоя готовности в рабочем коде.
 // Отмена задаётся между фазами, затем вызывается тот же протокол очистки.
 func TestStartupCancellationBetweenPhases(t *testing.T) {
-	for _, phase := range []string{"после bind", "после SDK", "после обслуживания", "после HTTP"} {
+	for _, phase := range []string{"после bind", "после SDK", "после воркера", "после HTTP"} {
 		t.Run(phase, func(t *testing.T) {
 			r := newServiceReceiver(t)
 			cfg := actualConfig(t, r)
@@ -286,7 +472,7 @@ func TestStartupCancellationBetweenPhases(t *testing.T) {
 				run  func(context.Context) error
 			}{
 				{"после bind", app.openListener}, {"после SDK", app.startSDK},
-				{"после обслуживания", app.startMaintenance}, {"после HTTP", app.startHTTP},
+				{"после воркера", app.startWorker}, {"после HTTP", app.startHTTP},
 			}
 			for _, step := range phases {
 				if err := step.run(ctx); err != nil {
@@ -378,7 +564,7 @@ func TestShutdownUsesOneBudget(t *testing.T) {
 					}
 				}
 				app.serverTask = &backgroundTask{done: make(chan struct{})}
-				app.maintenanceTask = &backgroundTask{done: make(chan struct{})}
+				app.workerTask = &backgroundTask{done: make(chan struct{})}
 				started := time.Now()
 				go func() {
 					time.Sleep(3 * time.Second)
@@ -407,7 +593,7 @@ func TestShutdownUsesOneBudget(t *testing.T) {
 				if err := app.stop(t.Context()); !errors.Is(err, context.DeadlineExceeded) || time.Now() != before {
 					t.Fatalf("повторная очистка получила новый бюджет: %v", err)
 				}
-				close(app.maintenanceTask.done)
+				close(app.workerTask.done)
 			})
 		})
 	}

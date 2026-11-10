@@ -2,9 +2,7 @@ package memory
 
 import (
 	"errors"
-	"fmt"
 	"iter"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,9 +24,8 @@ func DefaultLimits() Limits {
 }
 
 // Store хранит единое состояние процесса. После создания его нельзя копировать.
-// Сценарии, индекс, ограничения и регистрация измерений защищены одной блокировкой.
+// Единственный владелец — воркер; конкурентный доступ не поддерживается.
 type Store struct {
-	mu        sync.Mutex
 	limits    Limits
 	scenarios map[uuid.UUID]*record
 	events    map[uuid.UUID]dEvent.Request
@@ -58,30 +55,9 @@ func NewStore(limits Limits, recorder dContract.MeasurementRecorder) (*Store, er
 	}, nil
 }
 
-// Within предоставляет синхронный доступ без отката ранее выполненных фиксаций.
-// Обращения к State вне callback и вложенные операции с этим Store запрещены.
-func (s *Store) Within(operation func(dContract.State) error) error {
-	if operation == nil {
-		return fmt.Errorf("отсутствует операция: %w", dError.ErrInternal)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	access := &state{store: s}
-	defer func() { access.store = nil }()
-	return operation(access)
-}
-
-// state не выдаёт внутренних указателей. После callback доступ отзывается.
-// Как и весь State, этот объект нельзя использовать конкурентно или сохранять.
-type state struct {
-	store *Store
-}
-
-func (s *state) RemoveRetained(now time.Time) error {
-	if s.store == nil {
-		return dError.ErrInternal
-	}
-	for id, record := range s.store.scenarios {
+// RemoveRetained удаляет истёкшие закрытые сценарии вместе с индексом событий.
+func (s *Store) RemoveRetained(now time.Time) error {
+	for id, record := range s.scenarios {
 		if record.scenario.RetentionExpired(now) {
 			if err := s.DeleteScenario(id); err != nil {
 				return err
@@ -91,89 +67,78 @@ func (s *state) RemoveRetained(now time.Time) error {
 	return nil
 }
 
-func (s *state) FindScenario(id uuid.UUID) (*dScenario.Scenario, bool) {
-	if s.store == nil {
-		return nil, false
-	}
-	record, ok := s.store.scenarios[id]
+// FindScenario возвращает хранимый сценарий без копирования.
+func (s *Store) FindScenario(id uuid.UUID) (*dScenario.Scenario, bool) {
+	record, ok := s.scenarios[id]
 	if !ok {
 		return nil, false
 	}
-	return record.scenario.Clone(), true
+	return record.scenario, true
 }
 
-func (s *state) FindEvent(id uuid.UUID) (dEvent.Request, bool) {
-	if s.store == nil {
-		return dEvent.Request{}, false
-	}
-	storeEvent, ok := s.store.events[id]
+// FindEvent возвращает независимую копию сохранённого события.
+func (s *Store) FindEvent(id uuid.UUID) (dEvent.Request, bool) {
+	storeEvent, ok := s.events[id]
 	return storeEvent.Clone(), ok
 }
 
-func (s *state) Scenarios() iter.Seq[*dScenario.Scenario] {
+// Scenarios перебирает ссылки на сценарии без гарантии порядка.
+func (s *Store) Scenarios() iter.Seq[*dScenario.Scenario] {
 	return func(yield func(*dScenario.Scenario) bool) {
-		if s.store == nil {
-			return
-		}
 		// Удаление и обновление существующих записей допустимы при обходе map.
 		// Добавление записей во время обхода запрещено контрактом.
-		for _, record := range s.store.scenarios {
-			if !yield(record.scenario.Clone()) {
+		for _, record := range s.scenarios {
+			if !yield(record.scenario) {
 				return
 			}
 		}
 	}
 }
 
-func (s *state) CheckCapacity(scenarioID uuid.UUID) error {
-	if s.store == nil {
-		return dError.ErrInternal
-	}
-	if record, ok := s.store.scenarios[scenarioID]; ok {
-		if len(record.eventIDs) >= s.store.limits.MaxEventsPerScenario {
+// CheckCapacity проверяет место для нового события и, при необходимости, сценария.
+func (s *Store) CheckCapacity(scenarioID uuid.UUID) error {
+	if record, ok := s.scenarios[scenarioID]; ok {
+		if len(record.eventIDs) >= s.limits.MaxEventsPerScenario {
 			return dError.ErrCapacityExceeded
 		}
 		return nil
 	}
-	if len(s.store.scenarios) >= s.store.limits.MaxScenarios {
+	if len(s.scenarios) >= s.limits.MaxScenarios {
 		return dError.ErrCapacityExceeded
 	}
 	return nil
 }
 
-func (s *state) Commit(
+// Commit сохраняет сценарий и копию нового события, затем регистрирует измерения.
+// Проверки факта и вместимости выполняет application до изменения сценария.
+func (s *Store) Commit(
 	loginScenario *dScenario.Scenario,
 	event *dEvent.Request,
 	measurements dScenario.Measurements,
 ) error {
-	if s.store == nil {
-		return dError.ErrInternal
-	}
-	entry, exists := s.store.scenarios[loginScenario.ID()]
+	entry, exists := s.scenarios[loginScenario.ID()]
 	// Предусловия комплекта обеспечивает application. После сохранения отметок
 	// вызывается только локальный SDK. Между инструментами нет транзакции или механизма отката.
 	if !exists {
 		entry = &record{eventIDs: make(map[uuid.UUID]struct{})}
-		s.store.scenarios[loginScenario.ID()] = entry
+		s.scenarios[loginScenario.ID()] = entry
 	}
-	entry.scenario = loginScenario.Clone()
+	entry.scenario = loginScenario
 	if event != nil {
-		s.store.events[event.EventID] = event.Clone()
+		s.events[event.EventID] = event.Clone()
 		entry.eventIDs[event.EventID] = struct{}{}
 	}
-	s.store.recorder.Record(measurements)
+	s.recorder.Record(measurements)
 	return nil
 }
 
-func (s *state) DeleteScenario(id uuid.UUID) error {
-	if s.store == nil {
-		return dError.ErrInternal
-	}
-	if record, ok := s.store.scenarios[id]; ok {
+// DeleteScenario удаляет сценарий и его события, не уменьшая накопленные метрики.
+func (s *Store) DeleteScenario(id uuid.UUID) error {
+	if record, ok := s.scenarios[id]; ok {
 		for eventID := range record.eventIDs {
-			delete(s.store.events, eventID)
+			delete(s.events, eventID)
 		}
-		delete(s.store.scenarios, id)
+		delete(s.scenarios, id)
 	}
 	return nil
 }

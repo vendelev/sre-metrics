@@ -16,12 +16,13 @@ import (
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
 
 // Run собирает и запускает сервис до отмены ctx или ошибки компонента.
-// Успешная остановка дожидается запросов и обслуживания; сигналы обрабатывает cmd.
+// Успешная остановка дожидается запросов и обработки очереди; сигналы обрабатывает cmd.
 func Run(ctx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -39,18 +40,20 @@ func Run(ctx context.Context) error {
 // явной цепочкой конструкторов; контейнер зависимостей и его lifecycle
 // не используются.
 type service struct {
-	server   *http.Server
-	observer *application.LoginObserver
-	recorder *otel.Recorder
-	cfg      config.Config
-	logger   *slog.Logger
-	pipeline *otel.Pipeline
+	server     *http.Server
+	observer   *application.LoginObserver
+	eventQueue *queue.EventQueue
+	recorder   *otel.Recorder
+	cfg        config.Config
+	logger     *slog.Logger
+	pipeline   *otel.Pipeline
 
 	ready           func(net.Addr)
 	listener        *ownedListener
 	stopMaintenance context.CancelFunc
+	stopWorker      context.CancelFunc
 	serverTask      *backgroundTask
-	maintenanceTask *backgroundTask
+	workerTask      *backgroundTask
 	failed          chan struct{}
 	stopOnce        sync.Once
 	stopErr         error // Читается после stopOnce.Do, включая конкурентный повторный вызов.
@@ -62,6 +65,7 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 	if err != nil {
 		return nil, err
 	}
+
 	store, err := memory.NewStore(memory.Limits{
 		MaxScenarios:         cfg.MaxScenarios,
 		MaxEventsPerScenario: cfg.MaxEventsPerScenario,
@@ -69,14 +73,18 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 	if err != nil {
 		return nil, err
 	}
+
 	observer, err := application.NewLoginObserver(store, clock)
 	if err != nil {
 		return nil, err
 	}
-	handler, err := httpapi.NewHandler(observer.Process, logger.With("component", "http"))
+
+	eventQueue := queue.NewEventQueue(cfg.EventQueueSize)
+	handler, err := httpapi.NewRouter(eventQueue.Enqueue, logger.With("component", "http"), clock)
 	if err != nil {
 		return nil, err
 	}
+
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,
@@ -86,8 +94,16 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 		IdleTimeout:       cfg.HTTPIdleTimeout,
 		ErrorLog:          slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError),
 	}
+
 	// Сервис сохраняет собственный снимок, а не изменяемую конфигурацию вызывающего кода.
-	return &service{server: server, observer: observer, recorder: recorder, cfg: *cfg, logger: logger}, nil
+	return &service{
+		server:     server,
+		observer:   observer,
+		eventQueue: eventQueue,
+		recorder:   recorder,
+		cfg:        *cfg,
+		logger:     logger,
+	}, nil
 }
 
 func (s *service) run(ctx context.Context, ready func(net.Addr)) error {

@@ -13,6 +13,7 @@ import (
 // После сборки компонентов настройки не изменяются.
 type Config struct {
 	ListenAddr            string        `env:"USER_LOGIN_LISTEN_ADDR"`
+	EventQueueSize        int           `env:"USER_LOGIN_EVENT_QUEUE_SIZE"`
 	MaxScenarios          int           `env:"USER_LOGIN_MAX_SCENARIOS"`
 	MaxEventsPerScenario  int           `env:"USER_LOGIN_MAX_EVENTS_PER_SCENARIO"`
 	MaintenanceInterval   time.Duration `env:"USER_LOGIN_MAINTENANCE_INTERVAL"`
@@ -27,6 +28,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		ListenAddr:            ":8080",
+		EventQueueSize:        1024,
 		MaxScenarios:          10_000,
 		MaxEventsPerScenario:  32,
 		MaintenanceInterval:   time.Second,
@@ -75,6 +77,7 @@ func (c *Config) Validate() error {
 		name  string
 		value int64
 	}{
+		{"EventQueueSize", int64(c.EventQueueSize)},
 		{"MaxScenarios", int64(c.MaxScenarios)},
 		{"MaxEventsPerScenario", int64(c.MaxEventsPerScenario)},
 		{"MaintenanceInterval", int64(c.MaintenanceInterval)},

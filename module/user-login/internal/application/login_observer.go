@@ -14,6 +14,7 @@ import (
 
 // LoginObserver координирует наблюдение за сценариями входа.
 // Все операции одного экземпляра должны использовать одно хранилище процесса.
+// Process и Maintain вызывает только один владелец последовательно, без перекрытия.
 type LoginObserver struct {
 	store dContract.Store
 	clock dContract.Clock
@@ -31,30 +32,24 @@ func NewLoginObserver(store dContract.Store, clock dContract.Clock) (*LoginObser
 // Maintain закрывает истёкшие ожидания и удаляет записи с истёкшим retention.
 // Не запускает планировщик; повторный вызов безопасен и не увеличивает счётчики повторно.
 func (o *LoginObserver) Maintain() error {
-	err := o.store.Within(func(state dContract.State) error {
-		now := o.clock.Now()
-		if err := state.RemoveRetained(now); err != nil {
-			return err
-		}
-		for scenario := range state.Scenarios() {
-			if !scenario.CloseIfExpired(now) {
-				continue
-			}
-			if err := state.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
+	now := o.clock.Now()
+	if err := o.store.RemoveRetained(now); err != nil {
 		return internalError("обслуживание состояния", err)
+	}
+	for scenario := range o.store.Scenarios() {
+		if !scenario.CloseIfExpired(now) {
+			continue
+		}
+		if err := o.store.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
+			return internalError("обслуживание состояния", err)
+		}
 	}
 	return nil
 }
 
 // ProcessResult содержит только независимые данные безопасной диагностики.
 // При непустом NegativeDurationScenarioID вызывающий код должен записать диагностический
-// лог с этим ID без полного события. Process уже освободил защищённый участок.
+// лог с этим ID без полного события после завершения Process.
 type ProcessResult struct {
 	NegativeDurationScenarioID uuid.UUID
 }
@@ -63,19 +58,14 @@ func internalError(operation string, err error) error {
 	return fmt.Errorf("%s: %w: %w", operation, dError.ErrInternal, err)
 }
 
-// Process обрабатывает предметное событие после транспортной валидации.
+// Process обрабатывает предметное событие после транспортной валидации и проверки возраста при приёме.
+// Возраст повторно не проверяется: ожидание в очереди не отменяет допустимость приёма.
 // Событие и его AuthMode нельзя изменять до возврата; после возврата они не удерживаются.
 func (o *LoginObserver) Process(event *dEvent.Request) (ProcessResult, error) {
 	if event == nil {
 		return ProcessResult{}, fmt.Errorf("отсутствует событие: %w", dError.ErrInvalidEvent)
 	}
-	var result ProcessResult
-	err := o.store.Within(func(state dContract.State) error {
-		now := o.clock.Now()
-		var err error
-		result, err = processEvent(state, event, now)
-		return err
-	})
+	result, err := processEvent(o.store, event, o.clock.Now())
 	return result, operationError("обработка события", err)
 }
 
@@ -105,7 +95,7 @@ func equalEvents(a *dEvent.Request, b *dEvent.Request) bool {
 	return *a.AuthMode == *b.AuthMode
 }
 
-func processEvent(state dContract.State, event *dEvent.Request, now time.Time) (ProcessResult, error) {
+func processEvent(state dContract.Store, event *dEvent.Request, now time.Time) (ProcessResult, error) {
 	if err := state.RemoveRetained(now); err != nil {
 		return ProcessResult{}, err
 	}
@@ -114,9 +104,6 @@ func processEvent(state dContract.State, event *dEvent.Request, now time.Time) (
 			return ProcessResult{}, nil
 		}
 		return ProcessResult{}, dError.ErrConflict
-	}
-	if err := dError.CheckEventTime(event.OccurredAt, now); err != nil {
-		return ProcessResult{}, fmt.Errorf("%w: %w", dError.ErrInvalidEvent, err)
 	}
 	loginScenario, exists := state.FindScenario(event.ScenarioID)
 	if !exists {

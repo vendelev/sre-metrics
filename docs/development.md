@@ -27,22 +27,21 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Определения поддерживаются в [Makefile](../Makefile):
 
 ```bash
-make build             # bin/user-login
+make build-user-login  # bin/user-login
 make test              # тесты поведения с покрытием и race detector
-make vet               # стандартный статический анализ
 make lint              # включая архитектурные импорты
-make fmt               # форматирует Go-код, исправляет импорты, переносит строки длиннее 120 колонок
-make image-user-login   # образ metrics-user-login:local
+make lint-fix          # golines/goimports, затем автоисправления golangci-lint
 ```
 
-`make build`, `make test`, `make vet` и `make lint` не исправляют исходники;
-`make fmt` изменяет форматирование и импорты.
+`make build-user-login`, `make test` и `make lint` не исправляют исходники;
+`make lint-fix` изменяет Go-файлы во всём `module/`, включая форматирование,
+импорты и доступные линтеру автоисправления. Перед проверками запускайте `make lint-fix`.
 
 Сборка без Make:
 
 ```bash
-go build -o bin/user-login ./module/user-login/cmd
-docker build -f module/user-login/Dockerfile -t metrics-user-login:local .
+go -C module build -o ../bin/user-login ./user-login/cmd
+docker build -f docker/metrics/Dockerfile -t metrics-user-login:local .
 ```
 
 Состояние и поведение запуска описаны в [README модуля](../module/user-login/README.md).
@@ -106,12 +105,15 @@ curl --max-time 3 -i http://127.0.0.1:8080/events \
   --data-binary "{\"event_id\":\"019aabcd-0000-7000-8000-000000000001\",\"scenario_id\":\"019aabcd-0000-7000-8000-000000000100\",\"occurred_at\":\"$occurred_at\",\"source\":\"mis\",\"type\":\"login_started\"}"
 ```
 
-Ожидается 204 без тела. Получатель OTLP должен быть настроен отдельно; его недоступность
+Ожидается 202 без тела: событие принято в очередь, обработка ещё не подтверждена.
+При полной очереди ожидается 503 с кодом overloaded.
+Получатель OTLP должен быть настроен отдельно; его недоступность
 не меняет HTTP-ответ, но приводит к диагностике экспорта. Затем остановите процесс Ctrl+C:
 при успешном завершении
 появляется сообщение о штатной остановке и процесс возвращает код 0.
-Это проверяет приём, а не OTLP-доставку. Для нового синтетического события меняйте event_id;
-повтор использованного ID с другим временем является конфликтом. Ошибка последнего
+Это проверяет приём, а не обработку или OTLP-доставку. Для нового синтетического события
+меняйте event_id; повтор использованного ID с другим временем конфликтует при обработке,
+но не меняет ответ 202. Ошибка последнего
 экспорта означает неуспешную остановку; исправный HTTP-приём сам по себе не гарантирует код 0.
 
 При контейнерной проверке отправляйте тот же запрос из вспомогательного контейнера

@@ -8,20 +8,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
-	"github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
 
@@ -31,98 +26,37 @@ var (
 	wireTime   = "2026-11-02T12:00:00.000Z"
 )
 
-type clock struct{ now time.Time }
+type testClock struct{ now time.Time }
 
-func (c *clock) Now() time.Time { return c.now }
+func (c *testClock) Now() time.Time { return c.now }
 
-type fixture struct {
-	store    *memory.Store
-	observer *application.LoginObserver
-	clock    *clock
-	handler  http.Handler
-	logs     bytes.Buffer
-	calls    int
-	recorder *otel.Recorder
+func newTestClock() *testClock {
+	return &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 }
 
-func newFixture(t *testing.T, limits memory.Limits) *fixture {
+// fixture наблюдает передачу разобранных событий на рабочей границе accept.
+// Реальные очередь, обработка и SDK проверяются вместе в тестах сервиса.
+type fixture struct {
+	handler  http.Handler
+	accepted []event.Request
+	logs     bytes.Buffer
+	calls    int
+	clock    *testClock
+}
+
+func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{clock: &clock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}}
+	f := &fixture{clock: newTestClock()}
 	var err error
-	f.recorder = oteltest.New(t)
-	f.store, err = memory.NewStore(limits, f.recorder)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.observer, err = application.NewLoginObserver(f.store, f.clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.handler, err = httpapi.NewHandler(func(event *event.Request) (application.ProcessResult, error) {
+	f.handler, err = httpapi.NewRouter(func(e *event.Request) error {
 		f.calls++
-		return f.observer.Process(event)
-	}, slog.New(slog.NewJSONHandler(&f.logs, nil)))
+		f.accepted = append(f.accepted, e.Clone())
+		return nil
+	}, slog.New(slog.NewJSONHandler(&f.logs, nil)), f.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f
-}
-
-func TestHandlerErrorLogging(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		err    error
-		status int
-		code   string
-	}{
-		{name: "внутренняя ошибка", err: errors.New("сбой хранилища"), status: 500, code: "internal_error"},
-		{name: "конфликт", err: dError.ErrConflict, status: 409, code: "event_conflict"},
-		{name: "лимит", err: dError.ErrCapacityExceeded, status: 503, code: "capacity_exceeded"},
-		{name: "успех", status: 204},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewJSONHandler(&logs, nil)).With("service", "user-login", "component", "http")
-			handler, err := httpapi.NewHandler(
-				func(*event.Request) (application.ProcessResult, error) {
-					return application.ProcessResult{}, tt.err
-				},
-				logger,
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response := request(handler, http.MethodPost, "application/json", startedBody())
-			assertResponse(t, response, tt.status, tt.code)
-			if tt.status != http.StatusInternalServerError {
-				if logs.Len() != 0 {
-					t.Fatalf("ожидаемый результат создал лог: %s", logs.String())
-				}
-				return
-			}
-			var record map[string]any
-			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
-				t.Fatalf("ожидалась одна JSON-запись: %v", err)
-			}
-			for key, want := range map[string]string{
-				"level": "ERROR", "service": "user-login", "component": "http", "error": tt.err.Error(),
-			} {
-				if record[key] != want {
-					t.Errorf("поле %s: получено %v, ожидалось %s", key, record[key], want)
-				}
-			}
-			if strings.Contains(logs.String(), eventID.String()) ||
-				strings.Contains(logs.String(), scenarioID.String()) {
-				t.Fatal("лог содержит данные входящего события")
-			}
-			if strings.Contains(response.Body.String(), tt.err.Error()) {
-				t.Fatal("HTTP-ответ раскрывает внутреннюю ошибку")
-			}
-		})
-	}
 }
 
 func eventBody(id uuid.UUID, kind, source, at, mode string) string {
@@ -151,9 +85,9 @@ func assertResponse(t *testing.T, w *httptest.ResponseRecorder, status int, code
 	if w.Code != status {
 		t.Fatalf("статус %d, ожидался %d; тело %s", w.Code, status, w.Body.String())
 	}
-	if status == http.StatusNoContent {
+	if status == http.StatusAccepted {
 		if w.Body.Len() != 0 {
-			t.Fatalf("204 содержит тело: %s", w.Body.String())
+			t.Fatalf("202 содержит тело: %s", w.Body.String())
 		}
 		return
 	}
@@ -174,28 +108,45 @@ func post(t *testing.T, f *fixture, body string, status int, code string) {
 	assertResponse(t, request(f.handler, "POST", "application/json", body), status, code)
 }
 
-func TestNewHandler(t *testing.T) {
-	process := func(*event.Request) (application.ProcessResult, error) { return application.ProcessResult{}, nil }
+func TestNewRouter(t *testing.T) {
+	accept := func(*event.Request) error { return nil }
 	logger := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
-		name    string
-		process func(*event.Request) (application.ProcessResult, error)
-		logger  *slog.Logger
+		name   string
+		accept func(*event.Request) error
+		logger *slog.Logger
+		clock  contract.Clock
 	}{
-		{"нет операции", nil, logger},
-		{"нет логгера", process, nil},
+		{"нет операции", nil, logger, newTestClock()},
+		{"нет логгера", accept, nil, newTestClock()},
+		{"нет часов", accept, logger, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := httpapi.NewHandler(tc.process, tc.logger); err == nil {
+			if _, err := httpapi.NewRouter(tc.accept, tc.logger, tc.clock); err == nil {
 				t.Fatal("невалидная зависимость принята")
 			}
 		})
 	}
-	h, err := httpapi.NewHandler(process, logger)
+	f := newFixture(t)
+	post(t, f, startedBody(), 202, "")
+}
+
+// BR-57: 503 overloaded означает только полную очередь, не остановленный приём.
+func TestHandlerClosedQueue(t *testing.T) {
+	q := queue.NewEventQueue(1)
+	q.Close()
+	var logs bytes.Buffer
+	h, err := httpapi.NewRouter(q.Enqueue, slog.New(slog.NewJSONHandler(&logs, nil)), newTestClock())
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertResponse(t, request(h, "POST", "application/json", startedBody()), 204, "")
+	assertResponse(t, request(h, "POST", "application/json", startedBody()), 500, "internal_error")
+	if len(q.Events()) != 0 {
+		t.Fatal("закрытая очередь приняла событие")
+	}
+	if !strings.Contains(logs.String(), queue.ErrClosed.Error()) {
+		t.Fatal("отказ закрытой очереди не диагностирован")
+	}
 }
 
 func TestHandlerAcceptsEventTypes(t *testing.T) {
@@ -206,124 +157,20 @@ func TestHandlerAcceptsEventTypes(t *testing.T) {
 		{"login_rejected", "mis", ""}, {"login_rejected", "auth", ""},
 	} {
 		t.Run(tc.kind+"/"+tc.source+"/"+tc.mode, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
-			post(t, f, eventBody(eventID, tc.kind, tc.source, wireTime, tc.mode), 204, "")
-			if err := f.store.Within(func(s contract.State) error {
-				e, ok := s.FindEvent(eventID)
-				if !ok || e.Type != event.Type(tc.kind) || e.Source != event.Source(tc.source) ||
-					e.ScenarioID != scenarioID || !e.OccurredAt.Equal(f.clock.now) {
-					t.Fatalf("событие не сохранено или преобразовано неверно: %+v", e)
-				}
-				if (e.AuthMode == nil) != (tc.mode == "") || (e.AuthMode != nil && string(*e.AuthMode) != tc.mode) {
-					t.Fatal("неверное преобразование mode")
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
+			f := newFixture(t)
+			post(t, f, eventBody(eventID, tc.kind, tc.source, wireTime, tc.mode), 202, "")
+			if len(f.accepted) != 1 {
+				t.Fatal("событие не передано в приём")
+			}
+			e := f.accepted[0]
+			if e.EventID != eventID || e.ScenarioID != scenarioID || string(e.Type) != tc.kind ||
+				string(e.Source) != tc.source || e.OccurredAt.Format("2006-01-02T15:04:05.000Z") != wireTime {
+				t.Fatalf("неверное преобразование события: %+v", e)
+			}
+			if (e.AuthMode == nil) != (tc.mode == "") || (e.AuthMode != nil && string(*e.AuthMode) != tc.mode) {
+				t.Fatal("неверное преобразование mode")
 			}
 		})
-	}
-}
-
-func TestHandlerSuccessAndEquivalentDuplicates(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
-	post(t, f, startedBody(), 204, "")
-	post(
-		t,
-		f,
-		eventBody(
-			uuid.MustParse("019aabcd-0000-7000-8000-000000000002"),
-			"login_mode_determined",
-			"auth",
-			wireTime,
-			"credentials",
-		),
-		204,
-		"",
-	)
-	success := eventBody(
-		uuid.MustParse("019aabcd-0000-7000-8000-000000000003"),
-		"login_succeeded",
-		"mis",
-		"2026-11-02T12:00:20.000Z",
-		"",
-	)
-	post(t, f, success, 204, "")
-	before := capture(t, f)
-	variants := []string{
-		" \n\t" + success + "\r\n",
-		strings.ReplaceAll(success, "019aabcd", "019AABCD"),
-		strings.ReplaceAll(success, "login_succeeded", `login_\u0073ucceeded`),
-		`{"type":"login_succeeded","source":"mis","occurred_at":"2026-11-02T12:00:20.000Z","scenario_id":"` + scenarioID.String() + `","event_id":"019aabcd-0000-7000-8000-000000000003"}`,
-	}
-	for _, body := range variants {
-		post(t, f, body, 204, "")
-		if !reflect.DeepEqual(before, capture(t, f)) {
-			t.Fatal("эквивалентный повтор изменил состояние")
-		}
-	}
-	a := oteltest.Read(t, f.recorder)
-	h := a.Durations[event.LoginModeCredentials]
-	if a.Completed[scenario.OutcomeSuccess] != 1 || h.Count != 1 || h.SumSeconds != 20 {
-		t.Fatalf("неверные агрегаты успешного пути: %+v", a)
-	}
-}
-
-// capture читает состояние без обслуживания, включая сохранённые ID и агрегаты.
-type stateSnapshot struct {
-	scenarios  map[uuid.UUID]*scenario.Scenario
-	events     map[uuid.UUID]event.Request
-	aggregates oteltest.Values
-}
-
-func capture(t *testing.T, f *fixture) stateSnapshot {
-	t.Helper()
-	snapshot := stateSnapshot{
-		scenarios: make(map[uuid.UUID]*scenario.Scenario),
-		events:    make(map[uuid.UUID]event.Request),
-	}
-	if err := f.store.Within(func(s contract.State) error {
-		for scenario := range s.Scenarios() {
-			snapshot.scenarios[scenario.ID()] = scenario
-		}
-		for i := 1; i <= 40; i++ {
-			id := uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012d", i))
-			if event, ok := s.FindEvent(id); ok {
-				snapshot.events[id] = event
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	snapshot.aggregates = oteltest.Read(t, f.recorder)
-	return snapshot
-}
-
-func TestCaptureEventIndex(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
-	event := event.Request{
-		EventID:    eventID,
-		ScenarioID: scenarioID,
-		OccurredAt: f.clock.now,
-		Source:     event.SourceMIS,
-		Type:       event.LoginStarted,
-	}
-	if _, err := f.observer.Process(&event); err != nil {
-		t.Fatal(err)
-	}
-	before := capture(t, f)
-	if len(before.events) != 1 || before.events[eventID].EventID != eventID {
-		t.Fatal("снимок не содержит принятый ID события")
-	}
-	if err := f.store.Within(func(state contract.State) error {
-		return state.DeleteScenario(scenarioID)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	after := capture(t, f)
-	if len(after.events) != 0 || reflect.DeepEqual(before, after) {
-		t.Fatal("снимок не отразил удаление события из индекса")
 	}
 }
 
@@ -333,19 +180,12 @@ func TestHandlerRoutes(t *testing.T) {
 		path   string
 		status int
 	}{
-		{path: "/events", status: http.StatusNoContent},
-		{path: "/events?test=1", status: http.StatusNoContent},
-		{path: "/", status: http.StatusNotFound},
-		{path: "/other", status: http.StatusNotFound},
-		{path: "/events/", status: http.StatusNotFound},
-		{path: "/events/extra", status: http.StatusNotFound},
-		{path: "/Events", status: http.StatusNotFound},
-		{path: "//events", status: http.StatusNotFound},
-		{path: "/other/../events", status: http.StatusNotFound},
+		{"/events", 202}, {"/events?test=1", 202}, {"/", 404}, {"/other", 404},
+		{"/events/", 404}, {"/events/extra", 404}, {"/Events", 404}, {"//events", 404}, {"/other/../events", 404},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()
-			f := newFixture(t, memory.DefaultLimits())
+			f := newFixture(t)
 			r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(startedBody()))
 			r.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
@@ -353,13 +193,13 @@ func TestHandlerRoutes(t *testing.T) {
 			if w.Code != tc.status || w.Header().Get("Location") != "" {
 				t.Fatalf("путь %s: статус %d, заголовки %v", tc.path, w.Code, w.Header())
 			}
-			if tc.status == http.StatusNoContent {
-				assertResponse(t, w, tc.status, "")
-				if f.calls != 1 || len(capture(t, f).events) != 1 {
-					t.Fatal("маршрут не передал событие в приложение")
-				}
-			} else if f.calls != 0 || len(capture(t, f).scenarios) != 0 {
-				t.Fatal("неизвестный путь передан в приложение")
+			wantCalls := 0
+			if tc.status == 202 {
+				wantCalls = 1
+				assertResponse(t, w, 202, "")
+			}
+			if f.calls != wantCalls {
+				t.Fatalf("вызовы приёма: %d, ожидалось %d", f.calls, wantCalls)
 			}
 		})
 	}
@@ -368,7 +208,7 @@ func TestHandlerRoutes(t *testing.T) {
 func TestHandlerMethodsAndMIME(t *testing.T) {
 	for _, method := range []string{"GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "OTHER"} {
 		t.Run(method, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
+			f := newFixture(t)
 			w := request(f.handler, method, "text/plain", strings.Repeat("!", 4097))
 			if w.Header().Get("Allow") != "POST" {
 				t.Fatal("нет Allow: POST")
@@ -381,53 +221,23 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 				assertResponse(t, w, 405, "method_not_allowed")
 			}
 			if f.calls != 0 {
-				t.Fatal("метод вызвал Process")
+				t.Fatal("неподдерживаемый метод вызвал приём")
 			}
 		})
 	}
 	for _, mediaType := range []string{"", "text/plain", "application/jsonx", "application/problem+json", "application/json; charset", "application/json; charset=utf-8; charset=ascii"} {
 		t.Run("отказ MIME/"+mediaType, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
-			// Невалидный JSON не должен опередить MIME.
-			assertResponse(
-				t,
-				request(f.handler, "POST", mediaType, strings.Repeat("!", 4097)),
-				415,
-				"unsupported_media_type",
-			)
+			f := newFixture(t)
+			assertResponse(t, request(f.handler, "POST", mediaType, "!"), 415, "unsupported_media_type")
 			if f.calls != 0 {
-				t.Fatal("MIME вызвал Process")
+				t.Fatal("отказ MIME вызвал приём")
 			}
 		})
 	}
 	for _, mediaType := range []string{"application/json", "Application/JSON", "application/json;", "application/json; charset=utf-8", `application/json; charset="utf-8"; profile="test"`} {
 		t.Run("приём MIME/"+mediaType, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
-			assertResponse(t, request(f.handler, "POST", mediaType, startedBody()), 204, "")
-		})
-	}
-}
-
-func TestHandlerEmptyBody(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name      string
-		mediaType string
-		status    int
-		code      string
-	}{
-		{name: "нет MIME", status: 415, code: "unsupported_media_type"},
-		{name: "другой MIME", mediaType: "text/plain", status: 415, code: "unsupported_media_type"},
-		{name: "невалидный MIME", mediaType: "application/json; charset", status: 415, code: "unsupported_media_type"},
-		{name: "валидный MIME", mediaType: "application/json", status: 400, code: "invalid_event"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			f := newFixture(t, memory.DefaultLimits())
-			assertResponse(t, request(f.handler, http.MethodPost, tc.mediaType, ""), tc.status, tc.code)
-			if f.calls != 0 {
-				t.Fatal("пустое тело передано в приложение")
-			}
+			f := newFixture(t)
+			assertResponse(t, request(f.handler, "POST", mediaType, startedBody()), 202, "")
 		})
 	}
 }
@@ -436,7 +246,7 @@ func TestHandlerLargeBody(t *testing.T) {
 	for _, unknownLength := range []bool{false, true} {
 		for _, size := range []int{4097, 65536} {
 			t.Run(fmt.Sprintf("байт=%d/неизвестная длина=%t", size, unknownLength), func(t *testing.T) {
-				f := newFixture(t, memory.DefaultLimits())
+				f := newFixture(t)
 				body := startedBody() + strings.Repeat(" ", size-len(startedBody()))
 				r := httptest.NewRequest("POST", "/events", strings.NewReader(body))
 				r.Header.Set("Content-Type", "application/json")
@@ -445,9 +255,9 @@ func TestHandlerLargeBody(t *testing.T) {
 				}
 				w := httptest.NewRecorder()
 				f.handler.ServeHTTP(w, r)
-				assertResponse(t, w, 204, "")
-				if f.calls != 1 || len(capture(t, f).scenarios) != 1 {
-					t.Fatal("большое тело не обработано")
+				assertResponse(t, w, 202, "")
+				if f.calls != 1 {
+					t.Fatal("большое тело не передано в приём")
 				}
 			})
 		}
@@ -466,64 +276,66 @@ func (failedReader) Read([]byte) (int, error) {
 }
 
 func TestHandlerBodyReadFailure(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
+	f := newFixture(t)
 	r := httptest.NewRequest("POST", "/events", failedReader{})
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	f.handler.ServeHTTP(w, r)
 	assertResponse(t, w, 400, "invalid_event")
 	if f.calls != 0 {
-		t.Fatal("ошибка чтения вызвала Process")
+		t.Fatal("ошибка чтения вызвала приём")
 	}
 }
 
-func TestHandlerProcessErrors(t *testing.T) {
+func TestHandlerAcceptErrorsAndLogging(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		err    error
 		status int
 		code   string
 	}{
-		{"схема", dError.ErrInvalidEvent, 400, "invalid_event"},
-		{"конфликт", dError.ErrConflict, 409, "event_conflict"},
-		{"срок", scenario.ErrScenarioExpired, 410, "scenario_expired"},
-		{"вместимость", dError.ErrCapacityExceeded, 503, "capacity_exceeded"},
-		{"внутренняя", dError.ErrInternal, 500, "internal_error"},
-		{"неожиданная", errors.New("секретный внутренний текст " + eventID.String()), 500, "internal_error"},
+		{"успех", nil, 202, ""},
+		{"недопустимое событие", dError.ErrInvalidEvent, 400, "invalid_event"},
+		{"переполнение", dError.ErrOverloaded, 503, "overloaded"},
+		{"доменный лимит не является переполнением очереди", dError.ErrCapacityExceeded, 500, "internal_error"},
+		{"внутренняя", errors.New("синтетический сбой приёма"), 500, "internal_error"},
 	} {
 		for _, wrapped := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/обёртка=%t", tc.name, wrapped), func(t *testing.T) {
-				err := tc.err
-				if wrapped {
-					err = fmt.Errorf("контекст с секретом: %w", err)
+				cause := tc.err
+				if wrapped && cause != nil {
+					cause = fmt.Errorf("контекст: %w", cause)
 				}
-				h, createErr := httpapi.NewHandler(func(*event.Request) (application.ProcessResult, error) {
-					return application.ProcessResult{}, err
-				}, slog.New(slog.DiscardHandler))
-				if createErr != nil {
-					t.Fatal(createErr)
+				var logs bytes.Buffer
+				h, err := httpapi.NewRouter(
+					func(*event.Request) error { return cause },
+					slog.New(slog.NewJSONHandler(&logs, nil)),
+					newTestClock(),
+				)
+				if err != nil {
+					t.Fatal(err)
 				}
-				assertResponse(t, request(h, "POST", "application/json", startedBody()), tc.status, tc.code)
+				w := request(h, "POST", "application/json", startedBody())
+				assertResponse(t, w, tc.status, tc.code)
+				if tc.status != 500 {
+					if logs.Len() != 0 {
+						t.Fatalf("штатный результат создал лог: %s", logs.String())
+					}
+					return
+				}
+				var record map[string]any
+				if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+					t.Fatal(err)
+				}
+				if record["level"] != "ERROR" || record["error"] != cause.Error() {
+					t.Fatalf("неверная диагностика: %s", logs.String())
+				}
+				if strings.Contains(w.Body.String(), cause.Error()) ||
+					strings.Contains(logs.String(), eventID.String()) ||
+					strings.Contains(logs.String(), scenarioID.String()) {
+					t.Fatal("раскрыты детали ошибки или входящего события")
+				}
 			})
 		}
 	}
-}
-
-type failingStore struct{}
-
-func (failingStore) Within(func(contract.State) error) error {
-	return errors.New("внутренний сбой " + scenarioID.String())
-}
-
-func TestHandlerUnexpectedStoreError(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
-	o, err := application.NewLoginObserver(failingStore{}, f.clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := httpapi.NewHandler(o.Process, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertResponse(t, request(h, "POST", "application/json", startedBody()), 500, "internal_error")
 }

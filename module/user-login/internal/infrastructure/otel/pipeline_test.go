@@ -400,7 +400,14 @@ func TestPipelineTimeoutAndHTTPIndependence(t *testing.T) {
 		done <- p.Recorder.provider.ForceFlush(ctx)
 	}()
 	receive(t, entered)
-	handler, err := httpapi.NewHandler(o.Process, testLogger())
+	// Здесь проверяется независимость приёма и локального накопления от экспорта.
+	// Рабочая очередь с воркером проверяется настоящей сборкой сервиса в userlogin.
+	queue := make(chan *event.Request, 1)
+	handler, err := httpapi.NewRouter(
+		func(e *event.Request) error { queue <- e; return nil },
+		testLogger(),
+		exportClock{now: now},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +419,11 @@ func TestPipelineTimeoutAndHTTPIndependence(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("экспорт повлиял на HTTP: %d", response.Code)
+	}
+	if _, err := o.Process(<-queue); err != nil {
+		t.Fatal(err)
 	}
 	if err := receive(t, done); err == nil || time.Since(start) > 2*time.Second {
 		t.Fatalf("timeout: %v", err)

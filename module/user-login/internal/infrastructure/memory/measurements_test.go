@@ -95,7 +95,7 @@ func TestProcessLateMeasurementsOnce(t *testing.T) {
 	}
 }
 
-// BR-38: диагностика по переходу признака, вне критического участка и без события.
+// BR-38: диагностика по переходу признака, после обработки и без полного события.
 func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 	for _, order := range []string{"начало первым", "успех первым"} {
 		t.Run(order, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestProcessNegativeDurationDiagnostics(t *testing.T) {
 			if got.NegativeDurationScenarioID != testID(100) {
 				t.Fatalf("отсутствует безопасная диагностика: %+v", got)
 			}
-			// Диагностика возвращена наружу после освобождения блокировки, снимок доступен.
+			// Диагностика возвращена после обработки, накопление доступно независимо.
 			if snapshot(t, f).Completed[scenario2.OutcomeSuccess] != 1 {
 				t.Fatal("диагностика изменила успех")
 			}

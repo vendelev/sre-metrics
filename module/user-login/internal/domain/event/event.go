@@ -105,6 +105,20 @@ func ParseMode(value *string) (*OAuthMode, error) {
 	}
 }
 
+// ParseTime преобразует строку в Time и проверяет BR-37: обе границы включительны.
+func ParseTime(value string, now time.Time) (time.Time, error) {
+	occurredAt, err := time.Parse("2006-01-02T15:04:05.000Z", value)
+	if err != nil {
+		return now, errors.New("невалидное время события")
+	}
+
+	if occurredAt.Before(now.Add(-30*time.Minute)) || occurredAt.After(now.Add(30*time.Second)) {
+		return now, errors.New("время события вне допустимого диапазона")
+	}
+
+	return occurredAt, nil
+}
+
 // Request объединяет предметные данные одного факта входа.
 // Само объявление структуры не обеспечивает проверку контракта.
 type Request struct {

@@ -12,10 +12,12 @@ import (
 )
 
 type failingStore struct {
+	contract.Store
 	err error
 }
 
-func (s failingStore) Within(func(contract.State) error) error { return s.err }
+// RemoveRetained воспроизводит недостижимый с настоящим memory технический отказ.
+func (s failingStore) RemoveRetained(time.Time) error { return s.err }
 
 type fixedClock struct{}
 

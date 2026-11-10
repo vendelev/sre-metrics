@@ -51,7 +51,7 @@ func (s *service) startResources(ctx context.Context) error {
 	if err := s.startSDK(ctx); err != nil {
 		return err
 	}
-	if err := s.startMaintenance(ctx); err != nil {
+	if err := s.startWorker(ctx); err != nil {
 		return err
 	}
 	if err := s.startHTTP(ctx); err != nil {
@@ -90,14 +90,29 @@ func (s *service) shutdown(ctx context.Context) error {
 	if s.stopMaintenance != nil {
 		s.stopMaintenance()
 	}
+	if s.stopWorker != nil {
+		stopDeadline := context.AfterFunc(ctx, s.stopWorker)
+		defer stopDeadline()
+	}
 	var httpErr error
 	if s.serverTask != nil {
 		httpErr = shutdownError(s.server.Shutdown(ctx))
 	}
+	if s.eventQueue != nil {
+		// После HTTP Shutdown новых постановок нет. Даже при истёкшем бюджете
+		// поздний обработчик не сможет поставить событие после завершения воркера.
+		s.eventQueue.Close()
+	}
+	if httpErr != nil {
+		httpErr = errors.Join(httpErr, shutdownError(s.server.Close()))
+	}
 	drainErr := s.waitTasks(ctx)
-	if httpErr != nil || drainErr != nil {
+	if drainErr != nil && httpErr == nil {
 		// Close обрывает соединения, но не завершает произвольный обработчик Go.
 		drainErr = errors.Join(drainErr, shutdownError(s.server.Close()))
+	}
+	if s.stopWorker != nil {
+		s.stopWorker()
 	}
 	var sdkErr error
 	if s.pipeline != nil {
@@ -116,7 +131,7 @@ func (s *service) shutdown(ctx context.Context) error {
 }
 
 func (s *service) waitTasks(ctx context.Context) error {
-	for _, task := range []*backgroundTask{s.serverTask, s.maintenanceTask} {
+	for _, task := range []*backgroundTask{s.serverTask, s.workerTask} {
 		if task == nil {
 			continue
 		}
@@ -134,7 +149,7 @@ func (s *service) waitTasks(ctx context.Context) error {
 
 func (s *service) taskErrors() error {
 	var result error
-	for _, task := range []*backgroundTask{s.serverTask, s.maintenanceTask} {
+	for _, task := range []*backgroundTask{s.serverTask, s.workerTask} {
 		if task == nil {
 			continue
 		}

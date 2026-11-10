@@ -8,22 +8,28 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
-	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 )
 
-// NewHandler создаёт роутер chi с POST /events и согласованными HTTP-ответами.
-// Он не создаёт наблюдатель, хранилище или часы и не запускает сервер.
-// Операция вызывается синхронно и не должна изменять или удерживать переданное событие.
-func NewHandler(
-	process func(*dEvent.Request) (application.ProcessResult, error),
+// NewRouter создаёт роутер chi с POST /events и согласованными HTTP-ответами.
+// Он получает часы для проверки возраста, но не создаёт зависимости и не запускает сервер.
+// accept неблокирующе ставит проверенное событие в очередь.
+// После успеха accept может удерживать событие; адаптер больше его не использует.
+func NewRouter(
+	accept func(*dEvent.Request) error,
 	logger *slog.Logger,
+	clock contract.Clock,
 ) (http.Handler, error) {
-	if process == nil || logger == nil {
-		return nil, errors.New("для HTTP-адаптера необходимы операция обработки и логгер")
+	if accept == nil {
+		return nil, errors.New("не задана операция приёма событий")
+	}
+	if logger == nil {
+		return nil, errors.New("не задан логгер HTTP")
+	}
+	if clock == nil {
+		return nil, errors.New("не заданы часы HTTP")
 	}
 	router := chi.NewRouter()
 	router.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
@@ -36,39 +42,31 @@ func NewHandler(
 			writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type")
 			return
 		}
-		event, err := decodeEvent(r.Body)
+		event, err := decodeEvent(r.Body, clock.Now())
 		if err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_event")
 			return
 		}
-		result, err := process(&event)
+		err = accept(&event)
 		if err != nil {
-			status, code := processError(err)
+			status, code := acceptError(err)
 			if status == http.StatusInternalServerError {
-				logger.ErrorContext(r.Context(), "не удалось обработать событие", slog.Any("error", err))
+				logger.ErrorContext(r.Context(), "не удалось принять событие", slog.Any("error", err))
 			}
 			writeError(w, r, status, code)
 			return
 		}
-		if result.NegativeDurationScenarioID != uuid.Nil {
-			logger.WarnContext(r.Context(), "исходный момент успеха раньше начала: длительность не учитывается",
-				slog.String("scenario_id", result.NegativeDurationScenarioID.String()))
-		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusAccepted)
 	})
 	return router, nil
 }
 
-func processError(err error) (int, string) {
+func acceptError(err error) (int, string) {
 	switch {
 	case errors.Is(err, dError.ErrInvalidEvent):
 		return http.StatusBadRequest, "invalid_event"
-	case errors.Is(err, dError.ErrConflict):
-		return http.StatusConflict, "event_conflict"
-	case errors.Is(err, dScenario.ErrScenarioExpired):
-		return http.StatusGone, "scenario_expired"
-	case errors.Is(err, dError.ErrCapacityExceeded):
-		return http.StatusServiceUnavailable, "capacity_exceeded"
+	case errors.Is(err, dError.ErrOverloaded):
+		return http.StatusServiceUnavailable, "overloaded"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}

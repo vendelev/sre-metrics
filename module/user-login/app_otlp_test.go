@@ -185,8 +185,8 @@ func sendServiceEvent(
 		return err
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("HTTP %d вместо 204", response.StatusCode)
+	if response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("HTTP %d вместо 202", response.StatusCode)
 	}
 	return nil
 }

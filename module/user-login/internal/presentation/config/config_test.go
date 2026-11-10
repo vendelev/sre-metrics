@@ -36,8 +36,9 @@ func validDefault() config.Config {
 func TestLoadDefaults(t *testing.T) {
 	setupEnvironment(t)
 	want := config.Config{
-		ListenAddr:   ":8080",
-		MaxScenarios: 10_000, MaxEventsPerScenario: 32,
+		ListenAddr:     ":8080",
+		EventQueueSize: 1024,
+		MaxScenarios:   10_000, MaxEventsPerScenario: 32,
 		MaintenanceInterval: time.Second, HTTPReadHeaderTimeout: time.Second,
 		HTTPReadTimeout: 2 * time.Second, HTTPWriteTimeout: 2 * time.Second,
 		HTTPIdleTimeout: 30 * time.Second, ShutdownTimeout: 10 * time.Second,
@@ -55,15 +56,17 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadOverrides(t *testing.T) {
 	setupEnvironment(t)
 	values := map[string]string{
-		"USER_LOGIN_LISTEN_ADDR":   "127.0.0.1:0",
-		"USER_LOGIN_MAX_SCENARIOS": "20000", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO": "64",
+		"USER_LOGIN_LISTEN_ADDR":      "127.0.0.1:0",
+		"USER_LOGIN_EVENT_QUEUE_SIZE": "17",
+		"USER_LOGIN_MAX_SCENARIOS":    "20000", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO": "64",
 		"USER_LOGIN_MAINTENANCE_INTERVAL": "500ms", "USER_LOGIN_HTTP_READ_HEADER_TIMEOUT": "750ms",
 		"USER_LOGIN_HTTP_READ_TIMEOUT": "3s", "USER_LOGIN_HTTP_WRITE_TIMEOUT": "4s",
 		"USER_LOGIN_HTTP_IDLE_TIMEOUT": "1m", "USER_LOGIN_SHUTDOWN_TIMEOUT": "15s",
 	}
 	want := config.Config{
-		ListenAddr:   "127.0.0.1:0",
-		MaxScenarios: 20_000, MaxEventsPerScenario: 64,
+		ListenAddr:     "127.0.0.1:0",
+		EventQueueSize: 17,
+		MaxScenarios:   20_000, MaxEventsPerScenario: 64,
 		MaintenanceInterval: 500 * time.Millisecond, HTTPReadHeaderTimeout: 750 * time.Millisecond,
 		HTTPReadTimeout: 3 * time.Second, HTTPWriteTimeout: 4 * time.Second,
 		HTTPIdleTimeout: time.Minute, ShutdownTimeout: 15 * time.Second,
@@ -91,6 +94,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{"формат целого", "USER_LOGIN_MAX_SCENARIOS", "много"},
 		{"значение не раскрывается", "USER_LOGIN_MAX_SCENARIOS", "synthetic-secret"},
 		{"нулевой лимит", "USER_LOGIN_MAX_SCENARIOS", "0"},
+		{"формат очереди", "USER_LOGIN_EVENT_QUEUE_SIZE", "много"},
+		{"нулевая очередь", "USER_LOGIN_EVENT_QUEUE_SIZE", "0"},
+		{"отрицательная очередь", "USER_LOGIN_EVENT_QUEUE_SIZE", "-1"},
 		{"отрицательный лимит", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO", "-1"},
 		{"формат длительности", "USER_LOGIN_HTTP_READ_TIMEOUT", "2"},
 		{"нулевой timeout", "USER_LOGIN_HTTP_IDLE_TIMEOUT", "0s"},
@@ -118,6 +124,7 @@ func TestLoadEmptyValuesUseDefaults(t *testing.T) {
 	setupEnvironment(t)
 	for _, name := range []string{
 		"USER_LOGIN_LISTEN_ADDR", "USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO",
+		"USER_LOGIN_EVENT_QUEUE_SIZE",
 		"USER_LOGIN_MAINTENANCE_INTERVAL", "USER_LOGIN_HTTP_READ_HEADER_TIMEOUT", "USER_LOGIN_HTTP_READ_TIMEOUT",
 		"USER_LOGIN_HTTP_WRITE_TIMEOUT", "USER_LOGIN_HTTP_IDLE_TIMEOUT", "USER_LOGIN_SHUTDOWN_TIMEOUT",
 	} {

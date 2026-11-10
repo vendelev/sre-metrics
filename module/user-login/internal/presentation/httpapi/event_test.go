@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 )
 
 func replaceField(body, name, raw string) string {
@@ -125,23 +124,16 @@ func TestHandlerFieldSchema(t *testing.T) {
 
 func assertStructuralRejections(t *testing.T, cases []struct{ name, body string }) {
 	t.Helper()
-	f := newFixture(t, memory.DefaultLimits())
-	post(t, f, startedBody(), 204, "")
-	closed := eventBody(uuid.MustParse("019aabcd-0000-7000-8000-000000000002"), "login_succeeded", "mis", wireTime, "")
-	closed = strings.Replace(closed, scenarioID.String(), "019aabcd-0000-7000-8000-000000000200", 1)
-	post(t, f, closed, 204, "")
-	// Одна запись ждёт expiry, другая удаления по retention; worker не запускался.
-	f.clock.now = f.clock.now.Add(16 * time.Minute)
+	f := newFixture(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := capture(t, f)
 			calls := f.calls
 			post(t, f, tc.body, 400, "invalid_event")
 			if f.calls != calls {
-				t.Fatal("структурный отказ вызвал Process")
+				t.Fatal("структурный отказ вызвал приём")
 			}
-			if !reflect.DeepEqual(before, capture(t, f)) {
-				t.Fatal("структурный отказ изменил сценарии, события или агрегаты; запущено обслуживание")
+			if len(f.accepted) != 0 {
+				t.Fatal("структурный отказ передал событие в очередь")
 			}
 		})
 	}
@@ -159,12 +151,11 @@ func TestHandlerJSONDecoding(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t, memory.DefaultLimits())
-			post(t, f, valid, 204, "")
-			before := capture(t, f)
-			post(t, f, tc.body, 204, "")
-			if !reflect.DeepEqual(before, capture(t, f)) {
-				t.Fatal("эквивалентный JSON изменил принятый факт")
+			f := newFixture(t)
+			post(t, f, valid, 202, "")
+			post(t, f, tc.body, 202, "")
+			if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+				t.Fatal("эквивалентный JSON изменил разобранное событие")
 			}
 		})
 	}
@@ -181,14 +172,13 @@ func TestHandlerUUIDRepresentations(t *testing.T) {
 			"urn:uuid:019aabcd-0000-7000-8000-000000000001",
 		} {
 			t.Run(field+"/"+id, func(t *testing.T) {
-				f := newFixture(t, memory.DefaultLimits())
+				f := newFixture(t)
 				body := replaceField(startedBody(), field, fmt.Sprintf("%q", id))
-				post(t, f, body, 204, "")
-				before := capture(t, f)
+				post(t, f, body, 202, "")
 				canonical := uuid.MustParse(id).String()
-				post(t, f, replaceField(body, field, fmt.Sprintf("%q", canonical)), 204, "")
-				if !reflect.DeepEqual(before, capture(t, f)) {
-					t.Fatal("другая запись UUID изменила принятый факт")
+				post(t, f, replaceField(body, field, fmt.Sprintf("%q", canonical)), 202, "")
+				if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+					t.Fatal("другая запись UUID изменила разобранное событие")
 				}
 			})
 		}
@@ -199,13 +189,12 @@ func TestHandlerAbsentMode(t *testing.T) {
 	for _, kind := range []string{"login_started", "login_succeeded", "login_failed", "login_rejected"} {
 		for _, raw := range []string{"", "null", `""`} {
 			t.Run(kind+"/mode="+raw, func(t *testing.T) {
-				f := newFixture(t, memory.DefaultLimits())
+				f := newFixture(t)
 				body := eventBody(eventID, kind, "mis", wireTime, "")
-				post(t, f, body, 204, "")
-				before := capture(t, f)
-				post(t, f, replaceField(body, "mode", raw), 204, "")
-				if !reflect.DeepEqual(before, capture(t, f)) {
-					t.Fatal("пустой mode изменил принятый факт")
+				post(t, f, body, 202, "")
+				post(t, f, replaceField(body, "mode", raw), 202, "")
+				if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+					t.Fatal("пустой mode изменил разобранное событие")
 				}
 			})
 		}
@@ -213,9 +202,9 @@ func TestHandlerAbsentMode(t *testing.T) {
 }
 
 func TestHandlerEscapedNamesAndLeapDate(t *testing.T) {
-	f := newFixture(t, memory.DefaultLimits())
+	f := newFixture(t)
 	f.clock.now = time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
 	body := strings.Replace(startedBody(), wireTime, "2024-02-29T12:00:00.000Z", 1)
 	body = strings.Replace(body, `"type"`, `"\u0074ype"`, 1)
-	post(t, f, body, 204, "")
+	post(t, f, body, 202, "")
 }
