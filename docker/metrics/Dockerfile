@@ -2,7 +2,7 @@ FROM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY module/go.mod module/go.sum ./
 COPY module/user-login/ ./user-login/
-RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./user-login/cmd
+RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./user-login/cmd/server
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

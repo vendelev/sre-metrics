@@ -27,7 +27,7 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Определения поддерживаются в [Makefile](../Makefile):
 
 ```bash
-make build-user-login  # bin/user-login
+make build-user-login  # bin/user-login-server
 make test              # тесты поведения с покрытием и race detector
 make lint              # включая архитектурные импорты
 make lint-fix          # golines/goimports, затем автоисправления golangci-lint
@@ -40,7 +40,7 @@ make lint-fix          # golines/goimports, затем автоисправле�
 Сборка без Make:
 
 ```bash
-go -C module build -o ../bin/user-login ./user-login/cmd
+go -C module build -o ../bin/user-login-server ./user-login/cmd/server
 docker build -f docker/metrics/Dockerfile -t metrics-user-login:local .
 ```
 

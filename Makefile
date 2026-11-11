@@ -17,4 +17,4 @@ test:
 	go -C module test -cover -race ./...
 
 build-user-login:
-	go -C module build -o ../bin/user-login ./user-login/cmd
+	go -C module build -o ../bin/user-login-server ./user-login/cmd/server
