@@ -18,11 +18,11 @@ import (
 // accept неблокирующе ставит проверенное событие в очередь.
 // После успеха accept может удерживать событие; адаптер больше его не использует.
 func NewRouter(
-	accept func(*dEvent.Request) error,
+	enqueue func(*dEvent.Request) error,
 	logger *slog.Logger,
 	clock contract.Clock,
 ) (http.Handler, error) {
-	if accept == nil {
+	if enqueue == nil {
 		return nil, errors.New("не задана операция приёма событий")
 	}
 	if logger == nil {
@@ -47,7 +47,7 @@ func NewRouter(
 			writeError(w, r, http.StatusBadRequest, "invalid_event")
 			return
 		}
-		err = accept(&event)
+		err = enqueue(&event)
 		if err != nil {
 			status, code := acceptError(err)
 			if status == http.StatusInternalServerError {

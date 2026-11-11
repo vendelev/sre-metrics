@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,10 +16,14 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/httpserver"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
 
@@ -71,7 +75,7 @@ func TestNewServiceSharesState(t *testing.T) {
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 	app := testService(t, cfg, c)
 	running := runActual(t, app)
-	if err := sendServiceEvent(t, running, 1, 100, "login_started", c.Now(), false); err != nil {
+	if err := sendServiceEvent(t, running, 1, 100, "login_started", c.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.Advance(15 * time.Minute)
@@ -96,28 +100,27 @@ func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
 	c := newBarrierClock(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
 	app := testService(t, cfg, c)
 	now := c.Now()
-	// Предзагрузка проходит через тот же HTTP-handler до старта воркера. Барьер
-	// затем останавливает именно Process, а не проверку возраста нового запроса.
-	body := fmt.Sprintf(
-		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_started"}`,
-		now.Add(-5*time.Second).Format("2006-01-02T15:04:05.000Z"),
-	)
-	request := httptest.NewRequest("POST", "/events", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	app.server.Handler.ServeHTTP(response, request)
-	if response.Code != 202 || response.Body.Len() != 0 {
-		t.Fatalf("приём до обработки: %d %s", response.Code, response.Body.String())
+	// Первое событие попадает в очередь до запуска воркера; барьер затем
+	// останавливает именно Process, а не проверку возраста новых запросов.
+	first := &dEvent.Request{
+		EventID:    uuid.MustParse("019aabcd-0000-7000-8000-000000000001"),
+		ScenarioID: uuid.MustParse("019aabcd-0000-7000-9000-000000000064"),
+		OccurredAt: now.Add(-5 * time.Second),
+		Type:       dEvent.LoginStarted,
+		Source:     dEvent.SourceMIS,
+	}
+	if err := app.eventQueue.Enqueue(first); err != nil {
+		t.Fatal(err)
 	}
 	c.armed.Store(true)
 	release := sync.OnceFunc(func() { close(c.release) })
 	defer release()
 	running := runActual(t, app)
 	waitSignal(t, c.entered)
-	if err := sendServiceEvent(t, running, 2, 100, "login_mode_determined", now, false); err != nil {
+	if err := sendServiceEvent(t, running, 2, 100, "login_mode_determined", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := sendServiceEvent(t, running, 3, 100, "login_succeeded", now, false); err != nil {
+	if err := sendServiceEvent(t, running, 3, 100, "login_succeeded", now); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -158,10 +161,10 @@ func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
 	if len(app.eventQueue.Events()) != 2 {
 		t.Fatal("отказ изменил очередь или HTTP дождался обработки")
 	}
-	shutdownStarted := make(chan struct{})
-	app.server.RegisterOnShutdown(func() { close(shutdownStarted) })
+	// Закрытие listener — первый шаг остановки: отказ соединения означает,
+	// что протокол остановки начался и дойдёт до Shutdown и ожидания drain.
 	running.cancel()
-	waitSignal(t, shutdownStarted)
+	waitListenerClosed(t, running.address)
 	select {
 	case <-running.done:
 		t.Fatal("остановка не дождалась воркера")
@@ -185,13 +188,14 @@ func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
 func TestServiceQueuedProcessingFailure(t *testing.T) {
 	r := newServiceReceiver(t)
 	c := &testClock{now: time.Now()}
-	app := testService(t, actualConfig(t, r), c)
+	cfg := actualConfig(t, r)
+	app := testService(t, cfg, c)
 	cause := errors.New("синтетический отказ обработки очереди")
-	var err error
-	app.observer, err = application.NewLoginObserver(failedStore{err: cause}, c)
+	observer, err := application.NewLoginObserver(failedStore{err: cause}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
+	app.worker = mustWorker(t, observer, app.eventQueue, cfg.MaintenanceInterval)
 	if err := app.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +247,7 @@ func TestServiceStoredDuplicateAge(t *testing.T) {
 	app := testService(t, actualConfig(t, r), c)
 	running := runActual(t, app)
 	at := c.Now().Add(-29 * time.Minute)
-	if err := sendServiceEvent(t, running, 1, 100, "login_succeeded", at, false); err != nil {
+	if err := sendServiceEvent(t, running, 1, 100, "login_succeeded", at); err != nil {
 		t.Fatal(err)
 	}
 	nextServiceMetrics(t, r, func(_ receivedMetrics, v serviceValues) bool { return v.completed["success"] == 1 })
@@ -252,12 +256,23 @@ func TestServiceStoredDuplicateAge(t *testing.T) {
 		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_succeeded"}`,
 		at.Format("2006-01-02T15:04:05.000Z"),
 	)
-	request := httptest.NewRequest("POST", "/events", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	app.server.Handler.ServeHTTP(response, request)
-	if response.Code != 400 || response.Body.String() != "{\"error\":\"invalid_event\"}\n" {
-		t.Fatalf("старый сохранённый повтор: %d %s", response.Code, response.Body.String())
+	client := &http.Client{Timeout: time.Second}
+	defer client.CloseIdleConnections()
+	response, err := client.Post(
+		"http://"+running.address.String()+"/events",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 400 || string(data) != "{\"error\":\"invalid_event\"}\n" {
+		t.Fatalf("старый сохранённый повтор: %d %s", response.StatusCode, data)
 	}
 	if err := running.stop(t); err != nil {
 		t.Fatal(err)
@@ -283,12 +298,49 @@ func testService(t *testing.T, cfg *config.Config, c contract.Clock) *service {
 	return app
 }
 
+// mustWorker собирает воркера для сервисных проверок с подменённым наблюдателем.
+func mustWorker(
+	t *testing.T,
+	observer *application.LoginObserver,
+	events *queue.EventQueue,
+	interval time.Duration,
+) *worker.Worker {
+	t.Helper()
+	w, err := worker.New(observer, events, interval, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// idleWorker собирает настоящего воркера для синтетических проверок протокола
+// остановки: его операции не вызываются, но компоненты настоящие.
+func idleWorker(t *testing.T) *worker.Worker {
+	t.Helper()
+	observer, err := application.NewLoginObserver(failedStore{}, clock.RealTime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustWorker(t, observer, queue.NewEventQueue(1), time.Second)
+}
+
+// ingestEvent воспроизводит событие приёма для сервисных проверок очереди.
+func ingestEvent(id int, kind dEvent.Type, at time.Time) *dEvent.Request {
+	return &dEvent.Request{
+		EventID:    uuid.MustParse(fmt.Sprintf("019aabcd-0000-7000-8000-%012x", id)),
+		ScenarioID: uuid.MustParse("019aabcd-0000-7000-9000-000000000100"),
+		OccurredAt: at,
+		Type:       kind,
+		Source:     dEvent.SourceMIS,
+	}
+}
+
 func TestNewServiceCopiesConfig(t *testing.T) {
 	cfg := actualConfig(t, newServiceReceiver(t))
 	want := *cfg
 	app := testService(t, cfg, clock.RealTime{})
 	*cfg = config.Config{}
-	if app.cfg != want || app.server.Addr != want.ListenAddr {
+	if app.cfg != want {
 		t.Fatal("изменение исходной конфигурации повлияло на собранный сервис")
 	}
 }
@@ -342,7 +394,7 @@ func TestRunCancelledBeforeStartup(t *testing.T) {
 	if err := app.run(ctx, func(net.Addr) { ready = true }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("отмена до запуска не возвращена как ошибка: %v", err)
 	}
-	if ready || app.listener != nil || app.pipeline != nil {
+	if ready || app.httpServer.Addr() != nil || app.pipeline != nil {
 		t.Fatal("при отмене до запуска открыты ресурсы или объявлена готовность")
 	}
 }
@@ -380,11 +432,11 @@ func TestRunMaintenanceFailure(t *testing.T) {
 			if withCancellation {
 				store.cancel = cancel
 			}
-			var err error
-			app.observer, err = application.NewLoginObserver(store, clock.RealTime{})
+			observer, err := application.NewLoginObserver(store, clock.RealTime{})
 			if err != nil {
 				t.Fatal(err)
 			}
+			app.worker = mustWorker(t, observer, app.eventQueue, cfg.MaintenanceInterval)
 			done := make(chan error, 1)
 			go func() { done <- app.run(ctx, nil) }()
 			if err := waitResult(t, done); !errors.Is(err, cause) {
@@ -393,41 +445,6 @@ func TestRunMaintenanceFailure(t *testing.T) {
 			assertListenerClosed(t, app)
 		})
 	}
-}
-
-func TestRunShutdownBudget(t *testing.T) {
-	r := newServiceReceiver(t)
-	app := testService(t, actualConfig(t, r), clock.RealTime{})
-	app.cfg.ShutdownTimeout = 50 * time.Millisecond
-	entered, release, exited := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	releaseRequest := sync.OnceFunc(func() { close(release) })
-	defer releaseRequest()
-	app.server.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		close(entered)
-		defer close(exited)
-		<-release
-	})
-	running := runActual(t, app)
-	requestDone := make(chan error, 1)
-	go func() {
-		client := &http.Client{Timeout: 2 * time.Second}
-		defer client.CloseIdleConnections()
-		response, err := client.Get("http://" + running.address.String() + "/events")
-		if err == nil {
-			err = response.Body.Close()
-		}
-		requestDone <- err
-	}()
-	waitSignal(t, entered)
-	if err := running.stop(t); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("исчерпание бюджета не сообщено: %v", err)
-	}
-	if err := waitResult(t, requestDone); err == nil {
-		t.Fatal("соединение зависшего запроса не закрыто принудительно")
-	}
-	assertListenerClosed(t, app)
-	releaseRequest()
-	waitSignal(t, exited)
 }
 
 func TestNewServiceConstructorError(t *testing.T) {
@@ -445,10 +462,29 @@ func TestNewServiceConstructorError(t *testing.T) {
 
 func assertListenerClosed(t *testing.T, app *service) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", app.listener.Addr().String(), time.Second)
+	conn, err := net.DialTimeout("tcp", app.httpServer.Addr().String(), time.Second)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("listener принимает соединения после остановки")
+	}
+}
+
+// waitListenerClosed опрашивает адрес до первого отказа соединения. Закрытие
+// listener — первый шаг остановки, поэтому отказ детерминированно означает,
+// что протокол остановки начался и дойдёт до Shutdown и ожидания drain.
+func waitListenerClosed(t *testing.T, address net.Addr) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", address.String(), time.Second)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("остановка не закрыла listener")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -471,7 +507,7 @@ func TestStartupCancellationBetweenPhases(t *testing.T) {
 				name string
 				run  func(context.Context) error
 			}{
-				{"после bind", app.openListener}, {"после SDK", app.startSDK},
+				{"после bind", app.httpServer.Open}, {"после SDK", app.startSDK},
 				{"после воркера", app.startWorker}, {"после HTTP", app.startHTTP},
 			}
 			for _, step := range phases {
@@ -538,30 +574,23 @@ func TestStopConcurrentCallsShareCleanup(t *testing.T) {
 }
 
 // Для точной проверки бюджета достаточно фаз ожидания без SDK и сети.
-// Реальный экспорт с оставшимся бюджетом проверяется в app_otlp_test.go.
+// Реальный экспорт с оставшимся бюджетом проверяется в app_otlp_test.go,
+// механизм listener и его закрытие — в пакете httpserver.
 func TestShutdownUsesOneBudget(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		rollback   bool
-		closeDelay time.Duration
+		name     string
+		rollback bool
 	}{
 		{name: "остановка"},
 		{name: "очистка частичного запуска", rollback: true},
-		{name: "медленный Close", closeDelay: 8 * time.Second},
-		{name: "очистка с медленным Close", rollback: true, closeDelay: 8 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				app := &service{cfg: config.Default(), server: &http.Server{}}
-				if tc.closeDelay > 0 {
-					listener, err := net.Listen("tcp", "127.0.0.1:0")
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer func() { _ = listener.Close() }()
-					app.listener = &ownedListener{
-						Listener: delayedCloseListener{Listener: listener, delay: tc.closeDelay},
-					}
+				app := &service{
+					cfg:        config.Default(),
+					httpServer: httpserver.New(httpserver.Config{}, http.NotFoundHandler(), log.New(io.Discard, "", 0)),
+					worker:     idleWorker(t),
+					eventQueue: queue.NewEventQueue(1),
 				}
 				app.serverTask = &backgroundTask{done: make(chan struct{})}
 				app.workerTask = &backgroundTask{done: make(chan struct{})}
@@ -599,14 +628,33 @@ func TestShutdownUsesOneBudget(t *testing.T) {
 	}
 }
 
-// Управляемая задержка Close нужна для точной проверки расходования бюджета;
-// ядро ОС не предоставляет надёжного способа задержать закрытие TCP-listener.
-type delayedCloseListener struct {
-	net.Listener
-	delay time.Duration
-}
-
-func (l delayedCloseListener) Close() error {
-	time.Sleep(l.delay)
-	return l.Listener.Close()
+// Системный Close listener обычно успешен; передачу его ошибки проверяет
+// пакет httpserver. Здесь проверяется, что при отмене запуска ошибка
+// финального экспорта SDK сохраняется, а повторная очистка её не повторяет.
+func TestCancellationPreservesExportError(t *testing.T) {
+	r := newServiceReceiver(t)
+	r.fail.Store(true)
+	cfg := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	app := testService(t, cfg, clock.RealTime{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	t.Cleanup(func() { _ = app.stop(t.Context()) })
+	if err := app.httpServer.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.startSDK(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	err := app.stop(ctx)
+	// Контекст остановки не наследует отмену запуска: исчерпание бюджета
+	// сообщается отдельно, но ошибка финального экспорта сохраняется в нём.
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "освобождение SDK метрик") {
+		t.Fatalf("ошибка финального экспорта потеряна при отмене: %v", err)
+	}
+	if r.calls.Load() != 1 {
+		t.Fatal("финальная отправка не состоялась или повторилась")
+	}
+	assertListenerClosed(t, app)
 }

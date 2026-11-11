@@ -150,7 +150,6 @@ func sendServiceEvent(
 	id, scenario int,
 	kind string,
 	at time.Time,
-	blocked bool,
 ) error {
 	t.Helper()
 	source, extra := "mis", ""
@@ -175,9 +174,6 @@ func sendServiceEvent(
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if blocked {
-		request.Header.Set("X-Test-Barrier", "yes")
-	}
 	client := &http.Client{Timeout: time.Second}
 	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
@@ -317,28 +313,17 @@ func lastServiceMetrics(t *testing.T, r *serviceReceiver) serviceValues {
 	}
 }
 
-// BR-42, AC-31: текущий запрос и обслуживание завершаются до последнего пакета.
+// BR-42, AC-31: обслуживание завершается до последнего пакета, а принятые
+// события и drain очереди включаются в него. Дожидание активного обработчика
+// HTTP и принудительное закрытие зависшего соединения проверяет пакет httpserver.
 func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 	r := newServiceReceiver(t)
 	cfg := actualConfig(t, r)
 	cfg.MaintenanceInterval = 20 * time.Millisecond
 	c := newBarrierClock(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
 	app := testService(t, cfg, c)
-	requestEntered, requestRelease := make(chan struct{}), make(chan struct{})
-	releaseRequest := sync.OnceFunc(func() { close(requestRelease) })
 	releaseMaintenance := sync.OnceFunc(func() { close(c.release) })
-	defer releaseRequest()
 	defer releaseMaintenance()
-	handler := app.server.Handler
-	app.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("X-Test-Barrier") == "yes" {
-			close(requestEntered)
-			<-requestRelease
-		}
-		handler.ServeHTTP(w, request)
-	})
-	shutdownStarted := make(chan struct{})
-	app.server.RegisterOnShutdown(func() { close(shutdownStarted) })
 	running := runActual(t, app)
 	baseline := nextServiceMetrics(
 		t,
@@ -358,22 +343,22 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 		{2, 200, "login_started", now.Add(-5 * time.Second)},
 		{3, 200, "login_mode_determined", now},
 	} {
-		if err := sendServiceEvent(t, running, event.id, event.scenario, event.kind, event.at, false); err != nil {
+		if err := sendServiceEvent(t, running, event.id, event.scenario, event.kind, event.at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	requestDone := make(chan error, 1)
-	go func() { requestDone <- sendServiceEvent(t, running, 4, 200, "login_succeeded", now, true) }()
-	waitSignal(t, requestEntered)
+	// Очередь пуста, поэтому ближайший тик обслуживания останавливается барьером.
 	c.armed.Store(true)
 	waitSignal(t, c.entered)
+	// Событие 4 принято в очередь, пока воркер приостановлен обслуживанием:
+	// его обработка войдёт в drain и должна попасть в последний пакет.
+	if err := sendServiceEvent(t, running, 4, 200, "login_succeeded", now); err != nil {
+		t.Fatal(err)
+	}
 	c.Advance(2 * time.Second)
 	running.cancel()
-	waitSignal(t, shutdownStarted)
-	if conn, err := net.DialTimeout("tcp", running.address.String(), time.Second); err == nil {
-		_ = conn.Close()
-		t.Fatal("новое соединение при остановке")
-	}
+	// Закрытие listener — первый шаг остановки: новые соединения отклоняются.
+	waitListenerClosed(t, running.address)
 	select {
 	case <-running.done:
 		t.Fatal("остановка не дождалась обслуживания")
@@ -381,15 +366,6 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 	}
 	releaseMaintenance()
 	waitSignal(t, c.exited)
-	select {
-	case <-running.done:
-		t.Fatal("остановка не дождалась HTTP-запроса")
-	default:
-	}
-	releaseRequest()
-	if err := waitResult(t, requestDone); err != nil {
-		t.Fatal(err)
-	}
 	if err := running.stop(t); err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +402,7 @@ func TestServiceOTLPRecovery(t *testing.T) {
 	r.hold.Store(true)
 	waitSignal(t, r.entered)
 	for id := 1; id <= 2; id++ {
-		if err := sendServiceEvent(t, running, id, id, "login_succeeded", c.Now(), false); err != nil {
+		if err := sendServiceEvent(t, running, id, id, "login_succeeded", c.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -489,7 +465,7 @@ func TestServiceFinalExportTimeout(t *testing.T) {
 	c := &testClock{now: time.Now().UTC().Truncate(time.Millisecond)}
 	app := testService(t, cfg, c)
 	running := runActual(t, app)
-	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now(), false); err != nil {
+	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now()); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -521,17 +497,16 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 	app := testService(t, cfg, c)
 	releaseMaintenance := sync.OnceFunc(func() { close(c.release) })
 	defer releaseMaintenance()
-	shutdownStarted := make(chan struct{})
-	app.server.RegisterOnShutdown(func() { close(shutdownStarted) })
 	running := runActual(t, app)
-	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now(), false); err != nil {
+	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.armed.Store(true)
 	waitSignal(t, c.entered)
 	started := time.Now()
 	running.cancel()
-	waitSignal(t, shutdownStarted)
+	// Закрытие listener — первый шаг остановки и детерминированный сигнал её начала.
+	waitListenerClosed(t, running.address)
 	// Ожидание намеренно расходует бюджет, а не задаёт порядок goroutine:
 	// начало Shutdown и завершение обслуживания подтверждаются отдельными сигналами.
 	timer := time.NewTimer(3 * cfg.ShutdownTimeout / 4)
@@ -554,55 +529,39 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 }
 
 // Сеть здесь настоящая; граница незавершённого обслуживания управляется каналом.
+// Дожидание активного обработчика HTTP и принудительное закрытие зависшего
+// соединения проверяет пакет httpserver.
 func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
 	r := newServiceReceiver(t)
 	cfg := actualConfig(t, r)
 	cfg.ShutdownTimeout = 300 * time.Millisecond
-	cfg.HTTPReadTimeout, cfg.HTTPWriteTimeout = 50*time.Millisecond, 50*time.Millisecond
 	cfg.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
 	app := testService(t, cfg, c)
-	httpEntered, httpRelease, httpExited := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	releaseHTTP := sync.OnceFunc(func() { close(httpRelease) })
-	defer releaseHTTP()
-	handler := app.server.Handler
-	app.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		close(httpEntered)
-		defer close(httpExited)
-		<-httpRelease
-		handler.ServeHTTP(w, request)
-	})
-	c.armed.Store(true)
 	releaseOnce := sync.OnceFunc(func() { close(c.release) })
 	defer releaseOnce()
+	c.armed.Store(true)
 	running := runActual(t, app)
 	waitSignal(t, c.entered)
-	requestDone := make(chan error, 1)
-	go func() { requestDone <- sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now(), false) }()
-	waitSignal(t, httpEntered)
+	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if err := running.stop(t); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("незавершённое обслуживание скрыто: %v", err)
 	}
-	// Обычный Shutdown отправляет доступные значения, но запрос и обслуживание
-	// ещё заблокированы. Даже успешная отправка не делает остановку успешной
-	// и не означает окончательного снимка их измерений.
+	// Обычный Shutdown отправляет доступные значения, но обслуживание
+	// ещё заблокировано. Даже успешная отправка не делает остановку успешной
+	// и не означает окончательного снимка его измерений.
 	if lastServiceMetrics(t, r).completed["success"] != 0 {
-		t.Fatal("незавершённый запрос объявлен учтённым")
+		t.Fatal("незавершённое обслуживание объявлено учтённым")
 	}
-	for _, signal := range []<-chan struct{}{httpExited, c.exited} {
-		select {
-		case <-signal:
-			t.Fatal("Shutdown SDK завершил заблокированную Go-функцию")
-		default:
-		}
-	}
-	if err := waitResult(t, requestDone); err == nil {
-		t.Fatal("зависшее HTTP-соединение не закрыто принудительно")
+	select {
+	case <-c.exited:
+		t.Fatal("Shutdown SDK завершил заблокированное обслуживание")
+	default:
 	}
 	releaseOnce()
 	waitSignal(t, c.exited)
-	releaseHTTP()
-	waitSignal(t, httpExited)
 	// Получатель может опубликовать уже начатый до Shutdown запрос после
 	// возврата остановки. Продолжающийся периодический экспорт не даст
 	// наступить полосе тишины длиной в три интервала.

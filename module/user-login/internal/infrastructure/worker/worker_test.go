@@ -1,8 +1,7 @@
-package userlogin
+package worker
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,21 +9,87 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
+
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) Advance(duration time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(duration)
+}
+
+// barrierClock приостанавливает одну предметную операцию на существующей
+// границе часов. Это позволяет воспроизвести незавершённое обслуживание
+// без хука в воркере.
+type barrierClock struct {
+	*testClock
+	armed                    atomic.Bool
+	entered, release, exited chan struct{}
+}
+
+func newBarrierClock(now time.Time) *barrierClock {
+	return &barrierClock{
+		testClock: &testClock{now: now},
+		entered:   make(chan struct{}), release: make(chan struct{}), exited: make(chan struct{}),
+	}
+}
+
+func (c *barrierClock) Now() time.Time {
+	if c.armed.CompareAndSwap(true, false) {
+		close(c.entered)
+		<-c.release
+		defer close(c.exited)
+	}
+	return c.testClock.Now()
+}
+
+// waitSignal ограничивает ожидание сигнала, чтобы сбой теста не подвешивал набор.
+func waitSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(3 * time.Second):
+		t.Fatal("не дождались сигнала")
+	}
+}
+
+// waitResult ограничивает ожидание завершения задачи.
+func waitResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("не дождались завершения задачи")
+		return nil
+	}
+}
 
 func ingestEvent(id int, kind dEvent.Type, at time.Time) *dEvent.Request {
 	e := &dEvent.Request{
@@ -42,7 +107,11 @@ func ingestEvent(id int, kind dEvent.Type, at time.Time) *dEvent.Request {
 	return e
 }
 
-func workerFixture(t *testing.T, limits memory.Limits, c contract.Clock) (*service, *memory.Store, *bytes.Buffer) {
+func workerFixture(
+	t *testing.T,
+	limits memory.Limits,
+	c contract.Clock,
+) (*Worker, *memory.Store, *otel.Recorder, *bytes.Buffer) {
 	t.Helper()
 	recorder := oteltest.New(t)
 	store, err := memory.NewStore(limits, recorder)
@@ -55,22 +124,22 @@ func workerFixture(t *testing.T, limits memory.Limits, c contract.Clock) (*servi
 	}
 	ingest := queue.NewEventQueue(16)
 	logs := new(bytes.Buffer)
-	return &service{
-		cfg:        config.Default(),
-		observer:   observer,
-		eventQueue: ingest,
-		recorder:   recorder,
-		logger:     slog.New(slog.NewJSONHandler(logs, nil)),
-		failed:     make(chan struct{}, 1),
-	}, store, logs
+	// Интервал обслуживания прежней фикстуры config.Default(); обслуживание
+	// отключается до проверок, тики не влияют на исход.
+	w, err := New(observer, ingest, time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w, store, recorder, logs
 }
 
-func drainWorker(t *testing.T, s *service) {
+// drainWorker дочитывает закрытую очередь текущим воркером: планирование
+// обслуживания прекращается, как при штатной остановке до HTTP Shutdown.
+func drainWorker(t *testing.T, w *Worker) {
 	t.Helper()
-	s.eventQueue.Close()
-	stopped := make(chan struct{})
-	close(stopped)
-	if err := s.runWorker(t.Context(), stopped); err != nil {
+	w.StopMaintenance()
+	w.queue.Close()
+	if err := w.Run(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,7 +164,7 @@ func logRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
 // BR-38, BR-49, BR-57, BR-58: FIFO, повторы и безопасная диагностика обработки.
 func TestWorkerFIFOAndDiagnostics(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	s, store, logs := workerFixture(t, memory.DefaultLimits(), &testClock{now: now})
+	w, store, recorder, logs := workerFixture(t, memory.DefaultLimits(), &testClock{now: now})
 	events := []*dEvent.Request{
 		ingestEvent(1, dEvent.LoginStarted, now.Add(5*time.Second)),
 		ingestEvent(2, dEvent.LoginStarted, now.Add(6*time.Second)),
@@ -105,11 +174,11 @@ func TestWorkerFIFOAndDiagnostics(t *testing.T) {
 		ingestEvent(5, dEvent.LoginFailed, now),
 	}
 	for _, e := range events {
-		if err := s.eventQueue.Enqueue(e); err != nil {
+		if err := w.queue.Enqueue(e); err != nil {
 			t.Fatal(err)
 		}
 	}
-	drainWorker(t, s)
+	drainWorker(t, w)
 	{
 		scenario, ok := store.FindScenario(events[0].ScenarioID)
 		if !ok || scenario.Outcome() != dScenario.OutcomeSuccess {
@@ -130,7 +199,7 @@ func TestWorkerFIFOAndDiagnostics(t *testing.T) {
 			}
 		}
 	}
-	values := oteltest.Read(t, s.recorder)
+	values := oteltest.Read(t, recorder)
 	if values.Completed[dScenario.OutcomeSuccess] != 1 || values.Durations[dEvent.LoginModeCredentials].Count != 0 {
 		t.Fatal("неверный учёт успеха или отрицательной длительности")
 	}
@@ -161,7 +230,7 @@ func TestWorkerRefusalReasons(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "лимит", true: "закрытый сценарий"}[expired], func(t *testing.T) {
 			now := time.Now()
-			s, _, logs := workerFixture(
+			w, _, _, logs := workerFixture(
 				t,
 				memory.Limits{MaxScenarios: 1, MaxEventsPerScenario: 1},
 				&testClock{now: now},
@@ -170,13 +239,13 @@ func TestWorkerRefusalReasons(t *testing.T) {
 			if expired {
 				at = now.Add(-20 * time.Minute)
 			}
-			if err := s.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginStarted, at)); err != nil {
+			if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginStarted, at)); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.eventQueue.Enqueue(ingestEvent(2, dEvent.LoginSucceeded, now)); err != nil {
+			if err := w.queue.Enqueue(ingestEvent(2, dEvent.LoginSucceeded, now)); err != nil {
 				t.Fatal(err)
 			}
-			drainWorker(t, s)
+			drainWorker(t, w)
 			want := "capacity_exceeded"
 			if expired {
 				want = "scenario_expired"
@@ -191,13 +260,13 @@ func TestWorkerRefusalReasons(t *testing.T) {
 
 func TestWorkerDoesNotRecheckQueuedAge(t *testing.T) {
 	c := &testClock{now: time.Now()}
-	s, _, _ := workerFixture(t, memory.DefaultLimits(), c)
-	if err := s.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now().Add(-30*time.Minute))); err != nil {
+	w, _, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
+	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now().Add(-30*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 	c.Advance(time.Minute)
-	drainWorker(t, s)
-	if oteltest.Read(t, s.recorder).Completed[dScenario.OutcomeSuccess] != 1 {
+	drainWorker(t, w)
+	if oteltest.Read(t, recorder).Completed[dScenario.OutcomeSuccess] != 1 {
 		t.Fatal("очередь отменила допустимость возраста при приёме")
 	}
 }
@@ -210,48 +279,50 @@ func TestWorkerDeadlineAfterQueueWait(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				c := newBarrierClock(time.Now())
 				now := c.Now()
-				s, store, _ := workerFixture(t, memory.DefaultLimits(), c)
+				w, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
 				mode := ingestEvent(2, dEvent.LoginModeDetermined, now)
 				for _, e := range []*dEvent.Request{ingestEvent(1, dEvent.LoginStarted, now), mode} {
-					if err := s.eventQueue.Enqueue(e); err != nil {
+					if err := w.queue.Enqueue(e); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if err := s.startWorker(t.Context()); err != nil {
-					t.Fatal(err)
-				}
+				done := make(chan error, 1)
+				finished := make(chan struct{})
+				go func() {
+					done <- w.Run()
+					close(finished)
+				}()
 				release := sync.OnceFunc(func() { close(c.release) })
 				t.Cleanup(func() {
-					s.stopWorker()
-					s.eventQueue.Close()
+					w.Stop()
+					w.queue.Close()
 					release()
-					waitSignal(t, s.workerTask.done)
+					waitSignal(t, finished)
 				})
 				synctest.Wait()
 				c.armed.Store(true)
 				// Точный повтор занимает воркер, но не должен сам закрыть сценарий.
-				if err := s.eventQueue.Enqueue(mode); err != nil {
+				if err := w.queue.Enqueue(mode); err != nil {
 					t.Fatal(err)
 				}
 				waitSignal(t, c.entered)
 				success := ingestEvent(3, dEvent.LoginSucceeded, now.Add(time.Second))
-				if err := s.eventQueue.Enqueue(success); err != nil {
+				if err := w.queue.Enqueue(success); err != nil {
 					t.Fatal(err)
 				}
 				c.Advance(15*time.Minute + offset)
-				s.stopMaintenance()
-				s.eventQueue.Close()
+				w.StopMaintenance()
+				w.queue.Close()
 				release()
-				waitSignal(t, s.workerTask.done)
-				if s.workerTask.err != nil {
-					t.Fatal(s.workerTask.err)
+				if err := waitResult(t, done); err != nil {
+					t.Fatal(err)
 				}
 				want := dScenario.OutcomeSuccess
 				if offset == 0 {
 					want = dScenario.OutcomeUnknown
 				}
 				scenario, ok := store.FindScenario(success.ScenarioID)
-				if !ok || scenario.Outcome() != want || oteltest.Read(t, s.recorder).Completed[want] != 1 {
+				if !ok || scenario.Outcome() != want || oteltest.Read(t, recorder).Completed[want] != 1 {
 					t.Fatal("ожидание в очереди не учтено при проверке deadline")
 				}
 				if _, ok := store.FindEvent(success.EventID); ok != (offset < 0) {
@@ -262,27 +333,37 @@ func TestWorkerDeadlineAfterQueueWait(t *testing.T) {
 	}
 }
 
+// Реальный memory не выдаёт произвольную техническую ошибку. Подмена
+// существующего domain.Store нужна для проверки отказа обработки и того,
+// что отказ воркера закрывает приём.
+type failedStore struct {
+	contract.Store
+	err error
+}
+
+func (s failedStore) RemoveRetained(time.Time) error {
+	return s.err
+}
+
 func TestWorkerInternalFailureStopsAdmission(t *testing.T) {
 	c := &testClock{now: time.Now()}
-	s, _, logs := workerFixture(t, memory.DefaultLimits(), c)
+	w, _, _, logs := workerFixture(t, memory.DefaultLimits(), c)
 	cause := errors.New("синтетический сбой обработки")
-	var err error
-	s.observer, err = application.NewLoginObserver(failedStore{err: cause}, c)
+	observer, err := application.NewLoginObserver(failedStore{err: cause}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
+	w.observer = observer
+	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.startWorker(t.Context()); err != nil {
-		t.Fatal(err)
+	done := make(chan error, 1)
+	go func() { done <- w.Run() }()
+	if err := waitResult(t, done); !errors.Is(err, cause) {
+		t.Fatalf("сбой обработки потерян: %v", err)
 	}
-	waitSignal(t, s.workerTask.done)
-	if !errors.Is(s.workerTask.err, cause) {
-		t.Fatalf("сбой обработки потерян: %v", s.workerTask.err)
-	}
-	waitSignal(t, s.failed)
-	if err := s.eventQueue.Enqueue(
+	// Выход воркера закрывает очередь: приём остановлен вместе с обработкой.
+	if err := w.queue.Enqueue(
 		ingestEvent(2, dEvent.LoginSucceeded, c.Now()),
 	); err == nil ||
 		errors.Is(err, dError.ErrOverloaded) {
@@ -295,38 +376,29 @@ func TestWorkerInternalFailureStopsAdmission(t *testing.T) {
 
 // Один цикл не запускает Maintain одновременно с Process; после отмены новые
 // события не обрабатываются. Барьер использует существующую зависимость часов.
+// Маршрут ошибки задачи в сигнал остановки проверяют сервисные тесты.
 func TestWorkerStopsSchedulingAndHonorsCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newBarrierClock(time.Now())
-		s, _, _ := workerFixture(t, memory.DefaultLimits(), c)
+		w, _, _, _ := workerFixture(t, memory.DefaultLimits(), c)
 		for id := 1; id <= 2; id++ {
-			if err := s.eventQueue.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
+			if err := w.queue.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
 				t.Fatal(err)
 			}
 		}
 		c.armed.Store(true)
-		if err := s.startWorker(t.Context()); err != nil {
-			t.Fatal(err)
-		}
+		done := make(chan error, 1)
+		go func() { done <- w.Run() }()
 		waitSignal(t, c.entered)
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
-		s.stopMaintenance()
-		s.stopWorker()
+		w.StopMaintenance()
+		w.Stop()
 		close(c.release)
-		waitSignal(t, s.workerTask.done)
-		if s.workerTask.err != nil {
-			t.Fatalf("отмена не завершила воркер: %v", s.workerTask.err)
+		if err := waitResult(t, done); err != nil {
+			t.Fatalf("отмена не завершила воркер: %v", err)
 		}
-		if err := s.taskErrors(); err != nil {
-			t.Fatalf("отмена добавила ошибку фоновой задачи: %v", err)
-		}
-		select {
-		case <-s.failed:
-			t.Fatal("штатная отмена сигнализировала об отказе")
-		default:
-		}
-		if len(s.eventQueue.Events()) != 1 {
+		if len(w.queue.Events()) != 1 {
 			t.Fatal("после отмены началась обработка следующего события")
 		}
 	})
@@ -335,29 +407,27 @@ func TestWorkerStopsSchedulingAndHonorsCancellation(t *testing.T) {
 func TestWorkerMaintenanceAndDrain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := &testClock{now: time.Now()}
-		s, store, _ := workerFixture(t, memory.DefaultLimits(), c)
-		if err := s.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginStarted, c.Now())); err != nil {
+		w, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
+		if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginStarted, c.Now())); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.startWorker(t.Context()); err != nil {
-			t.Fatal(err)
-		}
+		done := make(chan error, 1)
+		go func() { done <- w.Run() }()
 		synctest.Wait()
 		c.Advance(15 * time.Minute)
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if oteltest.Read(t, s.recorder).Completed[dScenario.OutcomeUnknown] != 1 {
+		if oteltest.Read(t, recorder).Completed[dScenario.OutcomeUnknown] != 1 {
 			t.Fatal("периодическое обслуживание не закрыло ожидание")
 		}
-		s.stopMaintenance()
+		w.StopMaintenance()
 		synctest.Wait()
 		c.Advance(15 * time.Minute)
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
-		s.eventQueue.Close()
-		waitSignal(t, s.workerTask.done)
-		if s.workerTask.err != nil {
-			t.Fatal(s.workerTask.err)
+		w.queue.Close()
+		if err := waitResult(t, done); err != nil {
+			t.Fatal(err)
 		}
 		// Состояние читается только после завершения его единственного владельца.
 		// Без обработки новых событий запись с истёкшим retention остаётся в памяти,
@@ -366,27 +436,26 @@ func TestWorkerMaintenanceAndDrain(t *testing.T) {
 		if !ok || scenario.Outcome() != dScenario.OutcomeUnknown {
 			t.Fatal("после отмены обслуживания выполнена новая очистка")
 		}
-		before := oteltest.Read(t, s.recorder)
+		before := oteltest.Read(t, recorder)
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
-		if oteltest.Read(t, s.recorder).Completed[dScenario.OutcomeUnknown] != before.Completed[dScenario.OutcomeUnknown] {
+		if oteltest.Read(t, recorder).Completed[dScenario.OutcomeUnknown] != before.Completed[dScenario.OutcomeUnknown] {
 			t.Fatal("после завершения появились новые измерения")
 		}
 	})
 }
 
 func TestWorkerCancellationWithClosedQueue(t *testing.T) {
-	s, _, _ := workerFixture(t, memory.DefaultLimits(), &testClock{now: time.Now()})
-	if err := s.eventQueue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, time.Now())); err != nil {
+	w, _, _, _ := workerFixture(t, memory.DefaultLimits(), &testClock{now: time.Now()})
+	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	s.eventQueue.Close()
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := s.runWorker(ctx, nil); err != nil {
+	w.queue.Close()
+	w.Stop()
+	if err := w.Run(); err != nil {
 		t.Fatalf("отмена владельцем стала ошибкой воркера: %v", err)
 	}
-	if len(s.eventQueue.Events()) != 1 {
+	if len(w.queue.Events()) != 1 {
 		t.Fatal("после отмены началась обработка закрытой очереди")
 	}
 }
@@ -477,19 +546,22 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 			if limits == (memory.Limits{}) {
 				limits = memory.DefaultLimits()
 			}
-			s, store, logs := workerFixture(t, limits, &testClock{now: now})
+			w, store, recorder, logs := workerFixture(t, limits, &testClock{now: now})
 			for _, e := range tt.before {
-				if err := s.eventQueue.Enqueue(e); err != nil {
+				if err := w.queue.Enqueue(e); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := s.startWorker(t.Context()); err != nil {
-				t.Fatal(err)
-			}
+			done := make(chan error, 1)
+			finished := make(chan struct{})
+			go func() {
+				done <- w.Run()
+				close(finished)
+			}()
 			t.Cleanup(func() {
-				s.stopWorker()
-				s.eventQueue.Close()
-				waitSignal(t, s.workerTask.done)
+				w.Stop()
+				w.queue.Close()
+				waitSignal(t, finished)
 			})
 			ready := make(chan struct{}, len(tt.concurrent))
 			barrier := make(chan struct{})
@@ -500,7 +572,7 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 				go func() {
 					ready <- struct{}{}
 					<-barrier
-					results <- s.eventQueue.Enqueue(e)
+					results <- w.queue.Enqueue(e)
 				}()
 			}
 			for range tt.concurrent {
@@ -513,15 +585,14 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 				}
 			}
 			for _, e := range tt.after {
-				if err := s.eventQueue.Enqueue(e); err != nil {
+				if err := w.queue.Enqueue(e); err != nil {
 					t.Fatal(err)
 				}
 			}
-			s.stopMaintenance()
-			s.eventQueue.Close()
-			waitSignal(t, s.workerTask.done)
-			if s.workerTask.err != nil {
-				t.Fatal(s.workerTask.err)
+			w.StopMaintenance()
+			w.queue.Close()
+			if err := waitResult(t, done); err != nil {
+				t.Fatal(err)
 			}
 			stored := 0
 			for _, e := range tt.concurrent {
@@ -565,7 +636,7 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 				reasons["event_conflict"] != tt.conflicts || reasons["capacity_exceeded"] != tt.capacity {
 				t.Fatalf("неверные отказы обработки: %s", logs.String())
 			}
-			values := oteltest.Read(t, s.recorder)
+			values := oteltest.Read(t, recorder)
 			var completions int64
 			for _, count := range values.Completed {
 				completions += count

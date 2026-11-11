@@ -5,8 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"sync"
 
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/httpserver"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
+	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
 
 // backgroundTask публикует результат закрытием done. После истечения бюджета
@@ -14,6 +20,27 @@ import (
 type backgroundTask struct {
 	done chan struct{}
 	err  error // Читается только после закрытия done.
+}
+
+// service владеет компонентами и ресурсами одного запуска. Сборка выполняется
+// явной цепочкой конструкторов в app.go; контейнер зависимостей и его
+// lifecycle не используются. Поля после пустой строки — состояние протокола
+// одного запуска: этот файл задаёт его порядок и очистку.
+type service struct {
+	httpServer *httpserver.Server
+	worker     *worker.Worker
+	eventQueue *queue.EventQueue
+	recorder   *otel.Recorder
+	cfg        config.Config
+	logger     *slog.Logger
+	pipeline   *otel.Pipeline
+
+	ready      func(net.Addr)
+	serverTask *backgroundTask
+	workerTask *backgroundTask
+	failed     chan struct{}
+	stopOnce   sync.Once
+	stopErr    error // Читается после stopOnce.Do, включая конкурентный повторный вызов.
 }
 
 func (s *service) startTask(operation func() error) *backgroundTask {
@@ -44,8 +71,11 @@ func (s *service) start(ctx context.Context) error {
 	return err
 }
 
+// startResources открывает ресурсы в согласованном порядке: listener →
+// SDK/pipeline → воркер → HTTP → готовность. Неуспешная фаза возвращает
+// управление для очистки уже открытых ресурсов.
 func (s *service) startResources(ctx context.Context) error {
-	if err := s.openListener(ctx); err != nil {
+	if err := s.httpServer.Open(ctx); err != nil {
 		return err
 	}
 	if err := s.startSDK(ctx); err != nil {
@@ -60,6 +90,27 @@ func (s *service) startResources(ctx context.Context) error {
 	return s.announceReady(ctx)
 }
 
+// startWorker запускает фоновую задачу последовательной обработки очереди.
+func (s *service) startWorker(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.workerTask = s.startTask(s.worker.Run)
+	return nil
+}
+
+// startHTTP запускает фоновую задачу Serve; техническую интерпретацию её
+// результата выполняет httpserver.Server.
+func (s *service) startHTTP(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.serverTask = s.startTask(s.httpServer.Serve)
+	return nil
+}
+
+// announceReady объявляет готовность только после успешных фаз запуска
+// и при отсутствии ошибок уже запущенных фоновых задач.
 func (s *service) announceReady(ctx context.Context) error {
 	if err := s.taskErrors(); err != nil {
 		return err
@@ -67,9 +118,9 @@ func (s *service) announceReady(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.logger.Info("сервис user-login запущен", slog.String("address", s.listener.Addr().String()))
+	s.logger.Info("сервис user-login запущен", slog.String("address", s.httpServer.Addr().String()))
 	if s.ready != nil {
-		s.ready(s.listener.Addr())
+		s.ready(s.httpServer.Addr())
 	}
 	return nil
 }
@@ -86,34 +137,31 @@ func (s *service) shutdown(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ShutdownTimeout)
 	defer cancel()
 
-	closeErr := s.closeListener()
-	if s.stopMaintenance != nil {
-		s.stopMaintenance()
-	}
-	if s.stopWorker != nil {
-		stopDeadline := context.AfterFunc(ctx, s.stopWorker)
+	closeErr := s.httpServer.CloseListener()
+	// Прекращение планирования обслуживания опережает HTTP Shutdown: воркер
+	// дожидается начатой операции, новые тики не планируются.
+	s.worker.StopMaintenance()
+	if s.workerTask != nil {
+		stopDeadline := context.AfterFunc(ctx, s.worker.Stop)
 		defer stopDeadline()
 	}
 	var httpErr error
 	if s.serverTask != nil {
-		httpErr = shutdownError(s.server.Shutdown(ctx))
+		// При неуспехе Shutdown соединения закрываются принудительно внутри
+		// компонента, ошибки объединяются.
+		httpErr = s.httpServer.Shutdown(ctx)
 	}
 	if s.eventQueue != nil {
 		// После HTTP Shutdown новых постановок нет. Даже при истёкшем бюджете
 		// поздний обработчик не сможет поставить событие после завершения воркера.
 		s.eventQueue.Close()
 	}
-	if httpErr != nil {
-		httpErr = errors.Join(httpErr, shutdownError(s.server.Close()))
-	}
 	drainErr := s.waitTasks(ctx)
 	if drainErr != nil && httpErr == nil {
 		// Close обрывает соединения, но не завершает произвольный обработчик Go.
-		drainErr = errors.Join(drainErr, shutdownError(s.server.Close()))
+		drainErr = errors.Join(drainErr, s.httpServer.Close())
 	}
-	if s.stopWorker != nil {
-		s.stopWorker()
-	}
+	s.worker.Stop()
 	var sdkErr error
 	if s.pipeline != nil {
 		// Финальный экспорт — best effort с оставшимся временем. Даже при

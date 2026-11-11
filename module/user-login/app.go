@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
-	"sync"
 
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/httpserver"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
+	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
 )
@@ -36,30 +36,8 @@ func Run(ctx context.Context) error {
 	return app.run(ctx, nil)
 }
 
-// service владеет компонентами и ресурсами одного запуска. Сборка выполняется
-// явной цепочкой конструкторов; контейнер зависимостей и его lifecycle
-// не используются.
-type service struct {
-	server     *http.Server
-	observer   *application.LoginObserver
-	eventQueue *queue.EventQueue
-	recorder   *otel.Recorder
-	cfg        config.Config
-	logger     *slog.Logger
-	pipeline   *otel.Pipeline
-
-	ready           func(net.Addr)
-	listener        *ownedListener
-	stopMaintenance context.CancelFunc
-	stopWorker      context.CancelFunc
-	serverTask      *backgroundTask
-	workerTask      *backgroundTask
-	failed          chan struct{}
-	stopOnce        sync.Once
-	stopErr         error // Читается после stopOnce.Do, включая конкурентный повторный вызов.
-}
-
-// newService только собирает объекты: listener и фоновые задачи запускает start.
+// newService только собирает объекты: ресурсы и фоновые задачи открывает
+// протокол запуска в runtime.go.
 func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (*service, error) {
 	recorder, err := otel.Prepare()
 	if err != nil {
@@ -85,20 +63,23 @@ func newService(cfg *config.Config, logger *slog.Logger, clock contract.Clock) (
 		return nil, err
 	}
 
-	server := &http.Server{
+	httpServer := httpserver.New(httpserver.Config{
 		Addr:              cfg.ListenAddr,
-		Handler:           handler,
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 		IdleTimeout:       cfg.HTTPIdleTimeout,
-		ErrorLog:          slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError),
+	}, handler, slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError))
+
+	worker, err := worker.New(observer, eventQueue, cfg.MaintenanceInterval, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	// Сервис сохраняет собственный снимок, а не изменяемую конфигурацию вызывающего кода.
 	return &service{
-		server:     server,
-		observer:   observer,
+		httpServer: httpServer,
+		worker:     worker,
 		eventQueue: eventQueue,
 		recorder:   recorder,
 		cfg:        *cfg,
