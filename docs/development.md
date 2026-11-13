@@ -7,7 +7,7 @@
 Compose передаёт его сервису `user-login-metrics` через `env_file`.
 При прямом запуске Go-бинарник файл не читает: переменные должны быть в окружении процесса.
 
-Версия Go указана в [go.mod](../module/go.mod); образ сборки в
+Версия Go указана в [go.mod](../backend/go.mod); образ сборки в
 [Dockerfile сервиса](../docker/metrics/Dockerfile) должен соответствовать ей.
 Для линтера требуется golangci-lint v2, для образа — Docker с доступным daemon.
 Проверка с race detector требует поддерживаемой Go платформы и C-компилятора.
@@ -34,17 +34,17 @@ make lint-fix          # golines/goimports, затем автоисправле�
 ```
 
 `make build-user-login`, `make test` и `make lint` не исправляют исходники;
-`make lint-fix` изменяет Go-файлы во всём `module/`, включая форматирование,
+`make lint-fix` изменяет Go-файлы во всём `backend/`, включая форматирование,
 импорты и доступные линтеру автоисправления. Перед проверками запускайте `make lint-fix`.
 
 Сборка без Make:
 
 ```bash
-go -C module build -o ../bin/user-login-server ./user-login/cmd/server
+go -C backend build -o ../bin/user-login-server ./user-login/cmd/server
 docker build -f docker/metrics/Dockerfile -t metrics-user-login:local .
 ```
 
-Состояние и поведение запуска описаны в [README модуля](../module/user-login/README.md).
+Состояние и поведение запуска описаны в [README модуля](../backend/user-login/README.md).
 Успешная сборка не означает запуск сервера или работу экспорта.
 HTTP-контракт проверяется через `httptest`; обычный набор тестов также проверяет lifecycle
 на `127.0.0.1:0` без внешних зависимостей. OTLP/HTTP-тесты используют локальный `httptest`,
@@ -84,14 +84,14 @@ pkgsite -http=127.0.0.1:6060 .
 ```
 
 Из корня проекта команда запускает сервер документации. Пакет сервиса доступен
-по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/module/user-login>.
+по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/backend/user-login>.
 При запуске в WSL адрес можно открыть в браузере Windows; остановка — Ctrl+C.
 
 Для ручной проверки запустите бинарник по инструкции сервиса.
 
 Endpoint, HTTP timeout, TLS и период экспорта задаются стандартными `OTEL_*`;
 готовый пример — в [.env.example](../.env.example), пояснения — в
-[README user-login](../module/user-login/README.md#настройки).
+[README user-login](../backend/user-login/README.md#настройки).
 Нода и окружение задаются через `OTEL_RESOURCE_ATTRIBUTES`.
 Длительности OTEL задаются целыми миллисекундами, длительности `USER_LOGIN_*` — с единицами.
 
@@ -130,14 +130,14 @@ curl --max-time 3 -i http://127.0.0.1:8080/events \
 ## Зависимости и организация
 
 Версии Go-зависимостей и их контрольные суммы находятся в
-[`../module/go.mod`](../module/go.mod) и [`go.sum`](../module/go.sum). Путь Go-модуля
+[`../backend/go.mod`](../backend/go.mod) и [`go.sum`](../backend/go.sum). Путь Go-модуля
 `github.com/vendelev/sre-metrics` соответствует адресу репозитория. При переименовании
-обновляются `../module/go.mod`, Go-импорты и пути в [.golangci.yml](../module/.golangci.yml).
+обновляются `../backend/go.mod`, Go-импорты и пути в [.golangci.yml](../backend/.golangci.yml).
 
 При добавлении сервиса следуйте
 [правилам его размещения и изоляции](../.agents/rules/Architecture.md#статус-и-границы-сервисов).
 Дополните каталог модулей в корневом README, команды сборки в Makefile
-и правила импортов в `../module/.golangci.yml`.
+и правила импортов в `../backend/.golangci.yml`.
 
 Правила [архитектуры](../.agents/rules/Architecture.md) и
 [тестирования](../.agents/rules/Testing.md) определяют границы и требования к проверкам.

@@ -33,7 +33,7 @@ OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` п
 и возраста вызывающим кодом. [HTTP-адаптер](internal/presentation/httpapi/handler.go)
 разбирает транспортное представление и проверяет возраст;
 [очередь приёма](internal/infrastructure/queue/event_queue.go) неблокирующе принимает событие.
-[Воркер](worker.go) последовательно вызывает
+[Воркер](internal/infrastructure/worker/) последовательно вызывает
 `Process` и `Maintain`, пишет безопасные логи отказов и отрицательной длительности.
 
 HTTP-вход собирается в [NewRouter](internal/presentation/httpapi/handler.go): он получает
@@ -46,9 +46,7 @@ HTTP-вход собирается в [NewRouter](internal/presentation/httpapi/
 Неподдерживаемые методы обрабатывает `MethodNotAllowed` с сохранением контрактного JSON-ответа.
 Правила входа и измерений определены в
 [контракте событий и измерений](../../docs/specs/login-observability.md).
-Согласованные технические решения всей задачи 08 и этапы их приёмки — в
-[техническом дополнении](../../docs/specs/login-observability-implementation.md);
-реализация отправляющей стороны не означает приёмку всей задачи 08.
+Реализация отправляющей стороны не означает приёмку всей задачи 08.
 Схема запроса находится в
 [OpenAPI](../../docs/specs/login-observability.openapi.yml).
 
@@ -68,9 +66,10 @@ SDK накапливает cumulative-ряды; удаление сценари�
 Сбор не является транзакционным снимком нескольких инструментов: во время обработки
 Counter и Histogram могут отразить одну операцию в соседних сборах.
 Сборка и порядок операций — в [app.go](app.go), задачи и общий
-бюджет остановки — в [runtime.go](runtime.go), HTTP-ресурсы — в [listener.go](listener.go),
+бюджет остановки — в [runtime.go](runtime.go), HTTP-ресурсы — в
+[httpserver](internal/infrastructure/httpserver/),
 очередь приёма — в [event_queue.go](internal/infrastructure/queue/event_queue.go), обработка и периодическое обслуживание —
-в [worker.go](worker.go). Только воркер вызывает один LoginObserver и изменяет
+в [worker](internal/infrastructure/worker/). Только воркер вызывает один LoginObserver и изменяет
 одно хранилище. В memory нет мьютекса, транзакционной обёртки или копирования сценариев:
 ссылки доступны только владельцу. Проверки факта и вместимости предшествуют его применению;
 отката изменений нет. Сборщик SDK не обращается к сценариям или индексу событий.
@@ -89,7 +88,7 @@ API доступен доверенным отправителям как `http:
 USER_LOGIN_LISTEN_ADDR=127.0.0.1:8080 \
 OTEL_SERVICE_NAME=mis-login-observability \
 OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-login
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-login-server
 ```
 
 Для свободного порта укажите `127.0.0.1:0`; фактический адрес выводится в JSON-логе.
@@ -251,8 +250,6 @@ HTTP timeout задаётся через `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`; �
   проверяются тестами; переполненные внутри SDK значения не восстанавливаются.
 - Локальный OTLP/HTTP-получатель не подтверждает живую интеграцию Collector/Prometheus:
   фактические Prometheus-имена, labels и SLI во внешнем pipeline ещё не приняты.
-- [Graphify](../../graphify-out/README.md) — вспомогательная навигация;
-  граф текущего проекта ещё не построен.
 - [Передача событий и конфигурации: исследование hugeParam](docs/hugeparam-research.md).
 - [Асинхронный приём событий](../../docs/async-ingest.md) и [конкурентность и горутины](../../docs/goroutine.md).
 - [Все модули проекта](../../README.md).
