@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vendelev/sre-metrics/user-login/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
 )
 
 func setupEnvironment(t *testing.T) {
@@ -38,7 +38,7 @@ func TestLoadDefaults(t *testing.T) {
 	want := config.Config{
 		EventQueueSize: 1024,
 		MaxScenarios:   10_000, MaxEventsPerScenario: 32,
-		MaintenanceInterval: time.Second, ShutdownTimeout: 10 * time.Second,
+		MaintenanceInterval: time.Second,
 	}
 	got, err := config.Load()
 	if err != nil || got != want {
@@ -66,12 +66,12 @@ func TestLoadOverrides(t *testing.T) {
 	values := map[string]string{
 		"USER_LOGIN_EVENT_QUEUE_SIZE": "17",
 		"USER_LOGIN_MAX_SCENARIOS":    "20000", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO": "64",
-		"USER_LOGIN_MAINTENANCE_INTERVAL": "500ms", "USER_LOGIN_SHUTDOWN_TIMEOUT": "15s",
+		"USER_LOGIN_MAINTENANCE_INTERVAL": "500ms",
 	}
 	want := config.Config{
 		EventQueueSize: 17,
 		MaxScenarios:   20_000, MaxEventsPerScenario: 64,
-		MaintenanceInterval: 500 * time.Millisecond, ShutdownTimeout: 15 * time.Second,
+		MaintenanceInterval: 500 * time.Millisecond,
 	}
 	t.Run("переопределения", func(t *testing.T) {
 		for name, value := range values {
@@ -124,8 +124,7 @@ func TestLoadEmptyValuesUseDefaults(t *testing.T) {
 	setupEnvironment(t)
 	for _, name := range []string{
 		"USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO",
-		"USER_LOGIN_EVENT_QUEUE_SIZE",
-		"USER_LOGIN_MAINTENANCE_INTERVAL", "USER_LOGIN_SHUTDOWN_TIMEOUT",
+		"USER_LOGIN_EVENT_QUEUE_SIZE", "USER_LOGIN_MAINTENANCE_INTERVAL",
 	} {
 		t.Setenv(name, "")
 	}
@@ -178,9 +177,6 @@ func TestValidateBoundaries(t *testing.T) {
 		change func(*config.Config)
 	}{
 		{"граница интервала", func(c *config.Config) { c.MaintenanceInterval = time.Minute }},
-		{"бюджет остановки меньше HTTP-тайм-аутов", func(c *config.Config) {
-			c.ShutdownTimeout = time.Millisecond
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

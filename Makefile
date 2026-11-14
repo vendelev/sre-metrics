@@ -17,4 +17,4 @@ test:
 	go -C backend test -cover -race ./...
 
 build-user-login:
-	go -C backend build -o ../bin/user-login-server ./user-login/cmd/server
+	go -C backend build -o ../bin/user-login-server ./cmd/user-login-httpserver

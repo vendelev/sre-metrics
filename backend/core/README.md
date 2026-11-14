@@ -43,7 +43,8 @@ View инструментов. Выход: OTLP/HTTP экспорт в полу�
 `Open` listener → `Start` pipeline → регистрация инструментов через `Meter` →
 `StartServe`; остановка — `CloseListener`, HTTP `Shutdown` в переданном бюджете,
 финальный `Metrics.Shutdown` с оставшимся временем. Пример координации —
-[runtime.go](../user-login/runtime.go) сервиса user-login. Проверки компонентов
+[runtime.go](../cmd/user-login-httpserver/bootstrap/runtime.go) bootstrap'а
+приложения. Проверки компонентов
 используют настоящие listener, SDK и локальный получатель; команды — в
 [инструкции разработки](../../docs/development.md).
 

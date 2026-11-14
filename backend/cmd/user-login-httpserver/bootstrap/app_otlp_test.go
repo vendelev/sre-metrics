@@ -1,4 +1,4 @@
-package userlogin
+package bootstrap
 
 import (
 	"context"
@@ -19,63 +19,9 @@ import (
 	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	coreconfig "github.com/vendelev/sre-metrics/core/config"
 	"github.com/vendelev/sre-metrics/core/oteltest"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
+	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 )
-
-// actualConfig настраивает настоящее окружение SDK; вызывающие тесты не запускаются параллельно.
-func actualConfig(t *testing.T, r *oteltest.Receiver) (*config.Config, coreconfig.HTTP) {
-	t.Helper()
-	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", r.URL())
-	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "200")
-	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative")
-	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "20")
-	t.Setenv("OTEL_METRIC_EXPORT_TIMEOUT", "200")
-	t.Setenv(
-		"OTEL_RESOURCE_ATTRIBUTES",
-		"service.instance.id=service-test-instance,host.name=node-test,deployment.environment.name=test",
-	)
-	cfg := config.Default()
-	cfg.ShutdownTimeout = 2 * time.Second
-	settings := coreconfig.Default()
-	settings.Addr = "127.0.0.1:0"
-	settings.ReadHeaderTimeout = 50 * time.Millisecond
-	settings.ReadTimeout, settings.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
-	return &cfg, settings
-}
-
-type runningService struct {
-	cancel  context.CancelFunc
-	done    chan struct{}
-	err     error
-	address net.Addr
-}
-
-func runActual(t *testing.T, app *service) *runningService {
-	t.Helper()
-	ctx, cancel := context.WithCancel(t.Context())
-	running := &runningService{cancel: cancel, done: make(chan struct{})}
-	ready := make(chan net.Addr, 1)
-	go func() { running.err = app.run(ctx, func(addr net.Addr) { ready <- addr }); close(running.done) }()
-	t.Cleanup(func() { cancel(); waitSignal(t, running.done) })
-	select {
-	case running.address = <-ready:
-	case <-running.done:
-		t.Fatalf("ошибка запуска: %v", running.err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("нет готовности сервиса")
-	}
-	return running
-}
-
-func (s *runningService) stop(t *testing.T) error {
-	t.Helper()
-	s.cancel()
-	waitSignal(t, s.done)
-	return s.err
-}
 
 func sendServiceEvent(
 	t *testing.T,
@@ -146,7 +92,7 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 	}) {
 		t.Fatalf("Resource: %v", resource)
 	}
-	if len(rm.ScopeMetrics) != 1 || rm.ScopeMetrics[0].Scope.Name != otel.ScopeName {
+	if len(rm.ScopeMetrics) != 1 || rm.ScopeMetrics[0].Scope.Name != userlogin.ScopeName {
 		t.Fatal("scope сервиса")
 	}
 	values := serviceValues{
@@ -169,9 +115,9 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 				}
 				value := point.Attributes[0].Value.GetStringValue()
 				switch m.Name {
-				case otel.CompletedName:
+				case userlogin.CompletedName:
 					values.completed[value] = point.GetAsInt()
-				case otel.TechnicalErrorsName:
+				case userlogin.TechnicalErrorsName:
 					values.errors[value] = point.GetAsInt()
 				default:
 					t.Fatal("лишний Counter")
@@ -181,7 +127,7 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 			continue
 		}
 		h := m.GetHistogram()
-		if m.Name != otel.DurationName || m.Unit != "s" || h == nil ||
+		if m.Name != userlogin.DurationName || m.Unit != "s" || h == nil ||
 			h.AggregationTemporality != metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE ||
 			len(h.DataPoints) != 1 {
 			t.Fatal("контракт Histogram")
@@ -249,15 +195,15 @@ func lastServiceMetrics(t *testing.T, r *oteltest.Receiver) serviceValues {
 // BR-42, AC-31: обслуживание завершается до последнего пакета, а принятые
 // события и drain очереди включаются в него. Дожидание активного обработчика
 // HTTP и принудительное закрытие зависшего соединения проверяет пакет httpserver.
-func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
+func TestAppOTLPFinalAfterProcessing(t *testing.T) {
 	r := oteltest.NewReceiver(t)
-	cfg, settings := actualConfig(t, r)
+	cfg, settings, process := actualConfig(t, r)
 	cfg.MaintenanceInterval = 20 * time.Millisecond
 	// Явная View гистограммы модуля сохраняет контракт buckets независимо
 	// от агрегации, выбранной экспортёром по умолчанию.
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION", "base2_exponential_bucket_histogram")
 	c := newBarrierClock(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
-	app := testService(t, cfg, settings, c)
+	app := testApp(t, process, cfg, settings, c)
 	releaseMaintenance := sync.OnceFunc(func() { close(c.release) })
 	defer releaseMaintenance()
 	running := runActual(t, app)
@@ -316,9 +262,6 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 	if final.instance != baseline.instance || !reflect.DeepEqual(final.starts, baseline.starts) {
 		t.Fatal("SDK/Resource пересоздан")
 	}
-	if app.recorder.Reader() != nil {
-		t.Fatal("ManualReader в production")
-	}
 	select {
 	case <-r.Samples():
 		t.Fatal("отправка после остановки")
@@ -327,12 +270,12 @@ func TestServiceOTLPFinalAfterProcessing(t *testing.T) {
 }
 
 // BR-41, AC-30: сеть не удерживает HTTP и не сбрасывает cumulative-накопление.
-func TestServiceOTLPRecovery(t *testing.T) {
+func TestAppOTLPRecovery(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	r.SetFail(true)
-	cfg, settings := actualConfig(t, r)
+	cfg, settings, process := actualConfig(t, r)
 	c := &testClock{now: time.Now().UTC().Truncate(time.Millisecond)}
-	app := testService(t, cfg, settings, c)
+	app := testApp(t, process, cfg, settings, c)
 	running := runActual(t, app)
 	baseline := nextServiceMetrics(t, r, func(sample oteltest.Sample, _ serviceValues) bool { return sample.Failed })
 	r.SetHold(true)
@@ -366,10 +309,10 @@ func TestServiceOTLPRecovery(t *testing.T) {
 	}
 }
 
-func TestServicePipelineFailureClosesListener(t *testing.T) {
+func TestAppPipelineFailureClosesListener(t *testing.T) {
 	r := oteltest.NewReceiver(t)
-	cfg, settings := actualConfig(t, r)
-	app := testService(t, cfg, settings, &testClock{now: time.Now()})
+	cfg, settings, process := actualConfig(t, r)
+	app := testApp(t, process, cfg, settings, &testClock{now: time.Now()})
 	// SDK отклоняет сочетание HTTP endpoint и настроенного TLS при инициализации после bind.
 	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer tlsServer.Close()
@@ -387,19 +330,19 @@ func TestServicePipelineFailureClosesListener(t *testing.T) {
 		t.Fatalf("ошибка pipeline: %v", err)
 	}
 	assertListenerClosed(t, app)
-	if ready || app.recorder.Activated() || r.Calls() != 0 {
+	if ready || r.Calls() != 0 {
 		t.Fatal("ресурсы после отказа инициализации")
 	}
 }
 
-func TestServiceFinalExportTimeout(t *testing.T) {
+func TestAppFinalExportTimeout(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	r.SetHold(true)
-	cfg, settings := actualConfig(t, r)
+	cfg, settings, process := actualConfig(t, r)
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "100")
 	c := &testClock{now: time.Now().UTC().Truncate(time.Millisecond)}
-	app := testService(t, cfg, settings, c)
+	app := testApp(t, process, cfg, settings, c)
 	running := runActual(t, app)
 	if err := sendServiceEvent(t, running, 1, 1, "login_succeeded", c.Now()); err != nil {
 		t.Fatal(err)
@@ -408,7 +351,7 @@ func TestServiceFinalExportTimeout(t *testing.T) {
 	err := running.stop(t)
 	// Штатный retry SDK может ждать следующую попытку до общего deadline остановки.
 	// Допуск учитывает планировщик и race detector, но не допускает нового бюджета SDK.
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*cfg.ShutdownTimeout/2 {
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 3*process.ShutdownTimeout/2 {
 		t.Fatalf("неограниченный/скрытый отказ экспорта: %v", err)
 	}
 	if r.Calls() != 1 {
@@ -421,16 +364,16 @@ func TestServiceFinalExportTimeout(t *testing.T) {
 
 // Настоящее обслуживание расходует часть бюджета; зависший OTLP-получатель
 // должен получить лишь остаток, а не новый полный timeout остановки.
-func TestServiceSharedShutdownBudget(t *testing.T) {
+func TestAppSharedShutdownBudget(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	r.SetHold(true)
-	cfg, settings := actualConfig(t, r)
+	cfg, settings, process := actualConfig(t, r)
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "5000")
-	cfg.ShutdownTimeout = time.Second
+	process.ShutdownTimeout = time.Second
 	cfg.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
-	app := testService(t, cfg, settings, c)
+	app := testApp(t, process, cfg, settings, c)
 	releaseMaintenance := sync.OnceFunc(func() { close(c.release) })
 	defer releaseMaintenance()
 	running := runActual(t, app)
@@ -445,7 +388,7 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 	waitListenerClosed(t, running.address)
 	// Ожидание намеренно расходует бюджет, а не задаёт порядок goroutine:
 	// начало Shutdown и завершение обслуживания подтверждаются отдельными сигналами.
-	timer := time.NewTimer(3 * cfg.ShutdownTimeout / 4)
+	timer := time.NewTimer(3 * process.ShutdownTimeout / 4)
 	defer timer.Stop()
 	<-timer.C
 	releaseMaintenance()
@@ -456,7 +399,7 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 	}
 	// Допуск нужен планировщику и race detector; отдельный полный бюджет SDK
 	// увеличил бы длительность как минимум до 1,75 общего бюджета.
-	if elapsed := time.Since(started); elapsed > 3*cfg.ShutdownTimeout/2 {
+	if elapsed := time.Since(started); elapsed > 3*process.ShutdownTimeout/2 {
 		t.Fatalf("SDK получил новый бюджет после обслуживания: %s", elapsed)
 	}
 	if lastServiceMetrics(t, r).completed["success"] != 1 || r.Calls() != 1 {
@@ -467,13 +410,13 @@ func TestServiceSharedShutdownBudget(t *testing.T) {
 // Сеть здесь настоящая; граница незавершённого обслуживания управляется каналом.
 // Дожидание активного обработчика HTTP и принудительное закрытие зависшего
 // соединения проверяет пакет httpserver.
-func TestServiceIncompleteDrainShutsDownSDK(t *testing.T) {
+func TestAppIncompleteDrainShutsDownSDK(t *testing.T) {
 	r := oteltest.NewReceiver(t)
-	cfg, settings := actualConfig(t, r)
-	cfg.ShutdownTimeout = 300 * time.Millisecond
+	cfg, settings, process := actualConfig(t, r)
+	process.ShutdownTimeout = 300 * time.Millisecond
 	cfg.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
-	app := testService(t, cfg, settings, c)
+	app := testApp(t, process, cfg, settings, c)
 	releaseOnce := sync.OnceFunc(func() { close(c.release) })
 	defer releaseOnce()
 	c.armed.Store(true)

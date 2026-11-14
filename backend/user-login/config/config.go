@@ -9,15 +9,16 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
-// Config содержит проверяемые настройки одного запуска сервиса.
+// Config содержит проверяемые настройки одного запуска модуля.
 // После сборки компонентов настройки не изменяются.
+// Общий бюджет остановки процесса относится к приложению и загружается
+// в bootstrap процесса.
 // HTTP-адрес и тайм-ауты net/http принадлежат ядру core (CORE_HTTP_*).
 type Config struct {
 	EventQueueSize       int           `env:"USER_LOGIN_EVENT_QUEUE_SIZE"`
 	MaxScenarios         int           `env:"USER_LOGIN_MAX_SCENARIOS"`
 	MaxEventsPerScenario int           `env:"USER_LOGIN_MAX_EVENTS_PER_SCENARIO"`
 	MaintenanceInterval  time.Duration `env:"USER_LOGIN_MAINTENANCE_INTERVAL"`
-	ShutdownTimeout      time.Duration `env:"USER_LOGIN_SHUTDOWN_TIMEOUT"`
 }
 
 // Default возвращает начальные лимиты контракта и согласованные настройки запуска.
@@ -27,7 +28,6 @@ func Default() Config {
 		MaxScenarios:         10_000,
 		MaxEventsPerScenario: 32,
 		MaintenanceInterval:  time.Second,
-		ShutdownTimeout:      10 * time.Second,
 	}
 }
 
@@ -72,7 +72,6 @@ func (c *Config) Validate() error {
 		{"MaxScenarios", int64(c.MaxScenarios)},
 		{"MaxEventsPerScenario", int64(c.MaxEventsPerScenario)},
 		{"MaintenanceInterval", int64(c.MaintenanceInterval)},
-		{"ShutdownTimeout", int64(c.ShutdownTimeout)},
 	} {
 		if setting.value <= 0 {
 			return fmt.Errorf("%s: значение должно быть положительным", envName(setting.name))

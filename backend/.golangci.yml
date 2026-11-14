@@ -77,20 +77,36 @@ linters:
                 - hugeParam
         depguard:
             rules:
-                user-login-isolation:
+                app-isolation:
                     files:
-                        - "${base-path}/user-login/*.go"
+                        - "${base-path}/cmd/*.go"
+                        - "${base-path}/cmd/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "корень user-login может импортировать только собственные пакеты, публичную сборку core и явно выделенные общие пакеты platform."
+                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты platform."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
+                        - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/"
+                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
+                        - "github.com/vendelev/sre-metrics/core/config$"
+                        - "github.com/vendelev/sre-metrics/core/oteltest$"
+                        - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
+                        - "github.com/vendelev/sre-metrics/user-login/config$"
+                        - "github.com/vendelev/sre-metrics/platform/"
+                    list-mode: lax
+                user-login-bootstrap-isolation:
+                    files:
+                        - "${base-path}/user-login/bootstrap/*.go"
+                        - "${base-path}/user-login/bootstrap/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "bootstrap модуля не зависит от core и cmd: приложение соединяет модули через публичные API."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
                         - "github.com/vendelev/sre-metrics/user-login/"
                         - "github.com/vendelev/sre-metrics/platform/"
-                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
-                        - "github.com/vendelev/sre-metrics/core/config$"
-                        - "github.com/vendelev/sre-metrics/core/oteltest$"
                     list-mode: lax
                 user-login-internal-isolation:
                     files:

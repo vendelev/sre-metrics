@@ -40,7 +40,7 @@ make lint-fix          # golines/goimports, затем автоисправле�
 Сборка без Make:
 
 ```bash
-go -C backend build -o ../bin/user-login-server ./user-login/cmd/server
+go -C backend build -o ../bin/user-login-server ./cmd/user-login-httpserver
 docker build -f docker/metrics/Dockerfile -t metrics-user-login:local .
 ```
 

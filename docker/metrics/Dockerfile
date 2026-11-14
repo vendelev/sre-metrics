@@ -1,8 +1,10 @@
 FROM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
+COPY backend/core/ ./core/
 COPY backend/user-login/ ./user-login/
-RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./user-login/cmd/server
+COPY backend/cmd/ ./cmd/
+RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./cmd/user-login-httpserver
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
