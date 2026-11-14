@@ -163,3 +163,43 @@ linters:
                     deny:
                         - pkg: "net/http"
                           desc: "Код application работает с событиями, а не с HTTP-запросами."
+                presentation:
+                    files:
+                        - "${base-path}/user-login/internal/presentation/*.go"
+                        - "${base-path}/user-login/internal/presentation/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/go-chi/**"
+                        - "github.com/vendelev/sre-metrics/user-login/config$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/infrastructure$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/infrastructure/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/presentation$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/presentation/"
+                infrastructure-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/infrastructure/*.go"
+                        - "${base-path}/user-login/internal/infrastructure/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/user-login/internal/presentation"
+                          desc: "Infrastructure не зависит от Presentation; обратное направление разрешено матрицей."
+                worker-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/infrastructure/worker/*.go"
+                        - "!${base-path}/user-login/internal/infrastructure/worker/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase/"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
+                          desc: "worker получает готовый канал и операцию закрытия приёма, а не очередь."

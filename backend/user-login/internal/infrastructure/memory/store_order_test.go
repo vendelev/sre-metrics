@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	event2 "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	scenario2 "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
@@ -89,7 +89,7 @@ func TestOperationUsesSingleCurrentTime(t *testing.T) {
 	f := newFixture(t, memory.DefaultLimits())
 	process(t, f, event(1, 100, event2.LoginStarted, f.base), nil)
 	c := &countedClock{clock: f.clock}
-	observer, err := application.NewLoginObserver(f.store, c)
+	observer, err := usecase.NewLoginObserver(f.store, c)
 	if err != nil {
 		t.Fatal(err)
 	}

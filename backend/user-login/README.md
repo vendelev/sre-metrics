@@ -26,21 +26,27 @@ OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` п
 
 ## Входы и выходы
 
-Внутренний [LoginObserver](internal/application/login_observer.go) принимает
+Внутренний [LoginObserver](internal/application/usecase/login_observer.go) принимает
 предметные события и предоставляет вызываемое обслуживание. Накопление выполняет
 [OTel-адаптер](internal/infrastructure/otel/recorder.go) через локальный SDK;
 `PeriodicReader` собирает и экспортирует данные, не сбрасывая накопление.
 `ManualReader` используется только в изолированных тестах.
 Собственные memory-агрегаты и `LoginObserver.Snapshot()` удалены.
-[Обработка](internal/application/login_observer.go) ожидает проверку входных данных
-и возраста вызывающим кодом. [HTTP-адаптер](internal/presentation/httpapi/handler.go)
+[Обработка](internal/application/usecase/login_observer.go) ожидает проверку входных данных
+и возраста вызывающим кодом. [Controller](internal/presentation/http/controller/controller.go)
 разбирает транспортное представление и проверяет возраст;
 [очередь приёма](internal/infrastructure/queue/event_queue.go) неблокирующе принимает событие.
-[Воркер](internal/infrastructure/worker/) последовательно вызывает
+[Воркер](internal/infrastructure/worker/worker.go) получает готовый канал чтения
+и операцию закрытия приёма, последовательно вызывает
 `Process` и `Maintain`, пишет безопасные логи отказов и отрицательной длительности.
 
-HTTP-вход собирается в [NewRouter](internal/presentation/httpapi/handler.go): он получает
-готовую операцию `accept`, логгер и часы, без доступа к состоянию сценариев.
+HTTP-вход собирается в [routeOf](bootstrap/route.go): bootstrap модуля создаёт
+[Controller](internal/presentation/http/controller/controller.go), передаёт ему готовую
+операцию `accept`, логгер и часы, регистрирует chi-маршруты и возвращает handler
+через [Module.Handler](bootstrap/runtime.go). [rootHandler](../cmd/user-login-httpserver/bootstrap/route.go)
+приложения агрегирует маршруты из DI-группы и передаёт core единый `http.Handler`;
+для текущего одиночного приложения префикс `/` сохраняет внешний путь `/events`.
+Controller не имеет доступа к состоянию сценариев.
 Ответ `202` без тела подтверждает постановку, но не обработку или доставку метрик;
 `503 overloaded` означает полную очередь и отсутствие постановки.
 Размер тела на уровне приложения не ограничивается;
@@ -56,7 +62,7 @@ HTTP-вход собирается в [NewRouter](internal/presentation/httpapi/
 ## Устройство и запуск
 
 Контракт хранения находится в [domain](internal/domain/contract/store.go),
-порядок операций — в [application](internal/application/doc.go), хранение —
+порядок операций — в [usecase](internal/application/usecase/doc.go), хранение —
 в [memory](internal/infrastructure/memory/store.go).
 Возраст проверяется до очереди для всех запросов, включая повторы. После ожидания
 в очереди возраст повторно не проверяется; время динамических решений обработки
@@ -74,7 +80,7 @@ Counter и Histogram могут отразить одну операцию в с
 HTTP-сервер и OTel-pipeline —
 в общем модуле [core](../core/README.md),
 очередь приёма — в [event_queue.go](internal/infrastructure/queue/event_queue.go), обработка и периодическое обслуживание —
-в [worker](internal/infrastructure/worker/). Только воркер вызывает один LoginObserver и изменяет
+в [worker](internal/infrastructure/worker/worker.go). Только воркер вызывает один LoginObserver и изменяет
 одно хранилище. В memory нет мьютекса, транзакционной обёртки или копирования сценариев:
 ссылки доступны только владельцу. Проверки факта и вместимости предшествуют его применению;
 отката изменений нет. Сборщик SDK не обращается к сценариям или индексу событий.

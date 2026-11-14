@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
@@ -131,16 +130,20 @@ func mustModule(
 	if domainClock == nil {
 		domainClock = clock.RealTime{}
 	}
-	observer, err := application.NewLoginObserver(store, domainClock)
+	observer, err := usecase.NewLoginObserver(store, domainClock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	events := queue.NewEventQueue(2)
-	w, err := worker.New(observer, events, interval, slog.New(slog.DiscardHandler))
+	w, err := worker.New(observer, events.Events(), events.Close, interval, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewModule(recorder, w, events, http.NotFoundHandler())
+	m, err := NewModule(recorder, w, events, slog.New(slog.DiscardHandler), clock.RealTime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 // Рабочая сборка не активирует инструменты и не создаёт provider: активацию
@@ -153,16 +156,19 @@ func TestModuleBuildDoesNotActivateInstruments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer, err := application.NewLoginObserver(store, clock.RealTime{})
+	observer, err := usecase.NewLoginObserver(store, clock.RealTime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	events := queue.NewEventQueue(2)
-	w, err := worker.New(observer, events, time.Second, slog.New(slog.DiscardHandler))
+	w, err := worker.New(observer, events.Events(), events.Close, time.Second, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewModule(recorder, w, events, http.NotFoundHandler())
+	m, err := NewModule(recorder, w, events, slog.New(slog.DiscardHandler), clock.RealTime{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if m.recorder.Activated() {
 		t.Fatal("инструменты активированы при сборке")
 	}

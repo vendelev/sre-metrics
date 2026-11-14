@@ -1,4 +1,4 @@
-package httpapi_test
+package controller_test
 
 import (
 	"encoding/json"
@@ -28,7 +28,7 @@ func replaceField(body, name, raw string) string {
 	return string(encoded)
 }
 
-func TestHandlerInvalidJSON(t *testing.T) {
+func TestEventInvalidJSON(t *testing.T) {
 	valid := startedBody()
 	cases := []struct{ name, body string }{
 		{"пусто", ""}, {"пробелы", " \n\t"}, {"null", "null"},
@@ -48,7 +48,7 @@ func TestHandlerInvalidJSON(t *testing.T) {
 	assertStructuralRejections(t, cases)
 }
 
-func TestHandlerFieldSchema(t *testing.T) {
+func TestEventFieldSchema(t *testing.T) {
 	valid := startedBody()
 	modeBody := eventBody(eventID, "login_mode_determined", "auth", wireTime, "credentials")
 	var cases []struct{ name, body string }
@@ -139,7 +139,7 @@ func assertStructuralRejections(t *testing.T, cases []struct{ name, body string 
 	}
 }
 
-func TestHandlerJSONDecoding(t *testing.T) {
+func TestEventJSONDecoding(t *testing.T) {
 	valid := startedBody()
 	cases := []struct{ name, body string }{
 		{"неизвестный ключ", valid[:len(valid)-1] + `,"extra":{"value":true}}`},
@@ -161,7 +161,7 @@ func TestHandlerJSONDecoding(t *testing.T) {
 	}
 }
 
-func TestHandlerUUIDRepresentations(t *testing.T) {
+func TestEventUUIDRepresentations(t *testing.T) {
 	for _, field := range []string{"event_id", "scenario_id"} {
 		for _, id := range []string{
 			"019aabcd-0000-4000-8000-000000000001",
@@ -185,7 +185,7 @@ func TestHandlerUUIDRepresentations(t *testing.T) {
 	}
 }
 
-func TestHandlerAbsentMode(t *testing.T) {
+func TestEventAbsentMode(t *testing.T) {
 	for _, kind := range []string{"login_started", "login_succeeded", "login_failed", "login_rejected"} {
 		for _, raw := range []string{"", "null", `""`} {
 			t.Run(kind+"/mode="+raw, func(t *testing.T) {
@@ -201,7 +201,7 @@ func TestHandlerAbsentMode(t *testing.T) {
 	}
 }
 
-func TestHandlerEscapedNamesAndLeapDate(t *testing.T) {
+func TestEventEscapedNamesAndLeapDate(t *testing.T) {
 	f := newFixture(t)
 	f.clock.now = time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
 	body := strings.Replace(startedBody(), wireTime, "2024-02-29T12:00:00.000Z", 1)

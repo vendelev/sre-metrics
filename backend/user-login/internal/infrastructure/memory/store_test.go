@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	event2 "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	scenario2 "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
@@ -36,7 +36,7 @@ func (c *controlledClock) Set(now time.Time) {
 }
 
 type fixture struct {
-	observer *application.LoginObserver
+	observer *usecase.LoginObserver
 	store    *memory.Store
 	clock    *controlledClock
 	base     time.Time
@@ -52,7 +52,7 @@ func newFixture(t *testing.T, limits memory.Limits) *fixture {
 	}
 	base := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
 	clock := &controlledClock{now: base}
-	observer, err := application.NewLoginObserver(store, clock)
+	observer, err := usecase.NewLoginObserver(store, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func event(id, scenario int, kind event2.Type, at time.Time) *event2.Request {
 	return &e
 }
 
-func process(t *testing.T, f *fixture, e *event2.Request, want error) application.ProcessResult {
+func process(t *testing.T, f *fixture, e *event2.Request, want error) usecase.ProcessResult {
 	t.Helper()
 	result, err := f.observer.Process(e)
 	if !errors.Is(err, want) {

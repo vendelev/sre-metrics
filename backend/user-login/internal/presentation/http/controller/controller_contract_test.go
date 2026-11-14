@@ -1,4 +1,4 @@
-package httpapi_test
+package controller_test
 
 import (
 	"fmt"
@@ -8,13 +8,14 @@ import (
 
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
+	"github.com/vendelev/sre-metrics/user-login/internal/presentation/http/controller"
 )
 
-// BR-51: транспортные отказы предшествуют вызову приёма, даже при полной очереди.
-func TestHandlerTransportChecksBeforeAdmission(t *testing.T) {
+// BR-51: транспортные отказы контроллера предшествуют вызову приёма,
+// даже при полной очереди. Метод пути проверяет маршрутизация bootstrap.
+func TestControllerTransportChecksBeforeAdmission(t *testing.T) {
 	calls := 0
-	h, err := httpapi.NewRouter(func(*event.Request) error {
+	c, err := controller.New(func(*event.Request) error {
 		calls++
 		return dError.ErrOverloaded
 	}, slog.New(slog.DiscardHandler), newTestClock())
@@ -22,41 +23,40 @@ func TestHandlerTransportChecksBeforeAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, method, mediaType, body string
-		status                        int
-		code                          string
+		name, mediaType, body string
+		status                int
+		code                  string
 	}{
-		{"метод", "GET", "text/plain", "!", 405, "method_not_allowed"},
-		{"MIME", "POST", "text/plain", "!", 415, "unsupported_media_type"},
-		{"JSON", "POST", "application/json", "!", 400, "invalid_event"},
-		{"схема", "POST", "application/json", `{}`, 400, "invalid_event"},
-		{"пустое тело", "POST", "application/json", "", 400, "invalid_event"},
+		{"MIME", "text/plain", "!", 415, "unsupported_media_type"},
+		{"JSON", "application/json", "!", 400, "invalid_event"},
+		{"схема", "application/json", `{}`, 400, "invalid_event"},
+		{"пустое тело", "application/json", "", 400, "invalid_event"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertResponse(t, request(h, tc.method, tc.mediaType, tc.body), tc.status, tc.code)
+			assertResponse(t, request(c.AcceptEvent, "POST", tc.mediaType, tc.body), tc.status, tc.code)
 			if calls != 0 {
 				t.Fatal("транспортный отказ вызвал приём")
 			}
 		})
 	}
-	assertResponse(t, request(h, "POST", "application/json", startedBody()), 503, "overloaded")
+	assertResponse(t, request(c.AcceptEvent, "POST", "application/json", startedBody()), 503, "overloaded")
 	if calls != 1 {
 		t.Fatal("допустимый запрос не передан в приём")
 	}
 }
 
-// BR-57: адаптер не распознаёт повторы и передаёт каждое событие операции приёма.
-func TestHandlerForwardsDuplicates(t *testing.T) {
+// BR-57: контроллер не распознаёт повторы и передаёт каждое событие операции приёма.
+func TestControllerForwardsDuplicates(t *testing.T) {
 	f := newFixture(t)
 	post(t, f, startedBody(), 202, "")
 	post(t, f, startedBody(), 202, "")
 	if f.calls != 2 || len(f.accepted) != 2 {
-		t.Fatal("HTTP-адаптер выполнил дедупликацию вместо передачи в приём")
+		t.Fatal("контроллер выполнил дедупликацию вместо передачи в приём")
 	}
 }
 
 // BR-37, BR-51: возраст проверяется до accept, включая случай переполнения очереди.
-func TestHandlerAgeBeforeAdmission(t *testing.T) {
+func TestControllerAgeBeforeAdmission(t *testing.T) {
 	for _, overloaded := range []bool{false, true} {
 		for _, delta := range []time.Duration{
 			-30*time.Minute - time.Millisecond, -30 * time.Minute, -30*time.Minute + time.Millisecond,
@@ -65,7 +65,7 @@ func TestHandlerAgeBeforeAdmission(t *testing.T) {
 			t.Run(fmt.Sprintf("переполнение=%t/возраст=%s", overloaded, delta), func(t *testing.T) {
 				clock := newTestClock()
 				calls := 0
-				h, err := httpapi.NewRouter(func(*event.Request) error {
+				c, err := controller.New(func(*event.Request) error {
 					calls++
 					if overloaded {
 						return dError.ErrOverloaded
@@ -83,7 +83,7 @@ func TestHandlerAgeBeforeAdmission(t *testing.T) {
 				}
 				at := clock.Now().Add(delta).Format("2006-01-02T15:04:05.000Z")
 				body := eventBody(eventID, "login_succeeded", "mis", at, "")
-				assertResponse(t, request(h, "POST", "application/json", body), status, code)
+				assertResponse(t, request(c.AcceptEvent, "POST", "application/json", body), status, code)
 				if calls != wantCalls {
 					t.Fatalf("вызовы приёма: %d, ожидалось %d", calls, wantCalls)
 				}
@@ -93,12 +93,12 @@ func TestHandlerAgeBeforeAdmission(t *testing.T) {
 }
 
 // AC-39: повтор ранее переданного ID снова проходит проверку возраста.
-func TestHandlerRejectsOldDuplicateBeforeAdmission(t *testing.T) {
+func TestControllerRejectsOldDuplicateBeforeAdmission(t *testing.T) {
 	f := newFixture(t)
 	at := f.clock.Now().Add(-29 * time.Minute).Format("2006-01-02T15:04:05.000Z")
 	body := eventBody(eventID, "login_succeeded", "mis", at, "")
 	post(t, f, body, 202, "")
-	f.clock.now = f.clock.now.Add(2 * time.Minute)
+	f.clock.now = f.clock.Now().Add(2 * time.Minute)
 	post(t, f, body, 400, "invalid_event")
 	if f.calls != 1 || len(f.accepted) != 1 {
 		t.Fatal("старый повтор передан в очередь")

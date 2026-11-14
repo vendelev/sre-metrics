@@ -82,9 +82,10 @@ func newApp(
 		container.Provide(func() bootstrap.Views {
 			return bootstrap.Views{userlogin.HistogramView()}
 		}),
-		// Компоненты модуля: routerOf модуля предоставляет http.Handler
-		// для общего сервера core.
+		// Компоненты модуля: Module публикует свои маршруты в группу приложения,
+		// rootHandler агрегирует их в единственный http.Handler core.
 		userlogin.Provide(container),
+		container.Provide(rootHandler),
 	); err != nil {
 		return nil, err
 	}

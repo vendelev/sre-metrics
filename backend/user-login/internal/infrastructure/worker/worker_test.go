@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
@@ -111,14 +111,14 @@ func workerFixture(
 	t *testing.T,
 	limits memory.Limits,
 	c contract.Clock,
-) (*Worker, *memory.Store, *otel.Recorder, *bytes.Buffer) {
+) (*Worker, *queue.EventQueue, *memory.Store, *otel.Recorder, *bytes.Buffer) {
 	t.Helper()
 	recorder := oteltest.New(t)
 	store, err := memory.NewStore(limits, recorder)
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer, err := application.NewLoginObserver(store, c)
+	observer, err := usecase.NewLoginObserver(store, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,19 +126,19 @@ func workerFixture(
 	logs := new(bytes.Buffer)
 	// Интервал обслуживания прежней фикстуры config.Default(); обслуживание
 	// отключается до проверок, тики не влияют на исход.
-	w, err := New(observer, ingest, time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	w, err := New(observer, ingest.Events(), ingest.Close, time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return w, store, recorder, logs
+	return w, ingest, store, recorder, logs
 }
 
 // drainWorker дочитывает закрытую очередь текущим воркером: планирование
 // обслуживания прекращается, как при штатной остановке до HTTP Shutdown.
-func drainWorker(t *testing.T, w *Worker) {
+func drainWorker(t *testing.T, w *Worker, ingest *queue.EventQueue) {
 	t.Helper()
 	w.StopMaintenance()
-	w.queue.Close()
+	ingest.Close()
 	if err := w.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func logRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
 // BR-38, BR-49, BR-57, BR-58: FIFO, повторы и безопасная диагностика обработки.
 func TestWorkerFIFOAndDiagnostics(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	w, store, recorder, logs := workerFixture(t, memory.DefaultLimits(), &testClock{now: now})
+	w, ingest, store, recorder, logs := workerFixture(t, memory.DefaultLimits(), &testClock{now: now})
 	events := []*dEvent.Request{
 		ingestEvent(1, dEvent.LoginStarted, now.Add(5*time.Second)),
 		ingestEvent(2, dEvent.LoginStarted, now.Add(6*time.Second)),
@@ -174,11 +174,11 @@ func TestWorkerFIFOAndDiagnostics(t *testing.T) {
 		ingestEvent(5, dEvent.LoginFailed, now),
 	}
 	for _, e := range events {
-		if err := w.queue.Enqueue(e); err != nil {
+		if err := ingest.Enqueue(e); err != nil {
 			t.Fatal(err)
 		}
 	}
-	drainWorker(t, w)
+	drainWorker(t, w, ingest)
 	{
 		scenario, ok := store.FindScenario(events[0].ScenarioID)
 		if !ok || scenario.Outcome() != dScenario.OutcomeSuccess {
@@ -230,7 +230,7 @@ func TestWorkerRefusalReasons(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "лимит", true: "закрытый сценарий"}[expired], func(t *testing.T) {
 			now := time.Now()
-			w, _, _, logs := workerFixture(
+			w, ingest, _, _, logs := workerFixture(
 				t,
 				memory.Limits{MaxScenarios: 1, MaxEventsPerScenario: 1},
 				&testClock{now: now},
@@ -239,13 +239,13 @@ func TestWorkerRefusalReasons(t *testing.T) {
 			if expired {
 				at = now.Add(-20 * time.Minute)
 			}
-			if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginStarted, at)); err != nil {
+			if err := ingest.Enqueue(ingestEvent(1, dEvent.LoginStarted, at)); err != nil {
 				t.Fatal(err)
 			}
-			if err := w.queue.Enqueue(ingestEvent(2, dEvent.LoginSucceeded, now)); err != nil {
+			if err := ingest.Enqueue(ingestEvent(2, dEvent.LoginSucceeded, now)); err != nil {
 				t.Fatal(err)
 			}
-			drainWorker(t, w)
+			drainWorker(t, w, ingest)
 			want := "capacity_exceeded"
 			if expired {
 				want = "scenario_expired"
@@ -260,12 +260,12 @@ func TestWorkerRefusalReasons(t *testing.T) {
 
 func TestWorkerDoesNotRecheckQueuedAge(t *testing.T) {
 	c := &testClock{now: time.Now()}
-	w, _, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
-	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now().Add(-30*time.Minute))); err != nil {
+	w, ingest, _, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
+	if err := ingest.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now().Add(-30*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 	c.Advance(time.Minute)
-	drainWorker(t, w)
+	drainWorker(t, w, ingest)
 	if oteltest.Read(t, recorder).Completed[dScenario.OutcomeSuccess] != 1 {
 		t.Fatal("очередь отменила допустимость возраста при приёме")
 	}
@@ -279,10 +279,10 @@ func TestWorkerDeadlineAfterQueueWait(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				c := newBarrierClock(time.Now())
 				now := c.Now()
-				w, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
+				w, ingest, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
 				mode := ingestEvent(2, dEvent.LoginModeDetermined, now)
 				for _, e := range []*dEvent.Request{ingestEvent(1, dEvent.LoginStarted, now), mode} {
-					if err := w.queue.Enqueue(e); err != nil {
+					if err := ingest.Enqueue(e); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -295,24 +295,24 @@ func TestWorkerDeadlineAfterQueueWait(t *testing.T) {
 				release := sync.OnceFunc(func() { close(c.release) })
 				t.Cleanup(func() {
 					w.Stop()
-					w.queue.Close()
+					ingest.Close()
 					release()
 					waitSignal(t, finished)
 				})
 				synctest.Wait()
 				c.armed.Store(true)
 				// Точный повтор занимает воркер, но не должен сам закрыть сценарий.
-				if err := w.queue.Enqueue(mode); err != nil {
+				if err := ingest.Enqueue(mode); err != nil {
 					t.Fatal(err)
 				}
 				waitSignal(t, c.entered)
 				success := ingestEvent(3, dEvent.LoginSucceeded, now.Add(time.Second))
-				if err := w.queue.Enqueue(success); err != nil {
+				if err := ingest.Enqueue(success); err != nil {
 					t.Fatal(err)
 				}
 				c.Advance(15*time.Minute + offset)
 				w.StopMaintenance()
-				w.queue.Close()
+				ingest.Close()
 				release()
 				if err := waitResult(t, done); err != nil {
 					t.Fatal(err)
@@ -347,14 +347,14 @@ func (s failedStore) RemoveRetained(time.Time) error {
 
 func TestWorkerInternalFailureStopsAdmission(t *testing.T) {
 	c := &testClock{now: time.Now()}
-	w, _, _, logs := workerFixture(t, memory.DefaultLimits(), c)
+	w, ingest, _, _, logs := workerFixture(t, memory.DefaultLimits(), c)
 	cause := errors.New("синтетический сбой обработки")
-	observer, err := application.NewLoginObserver(failedStore{err: cause}, c)
+	observer, err := usecase.NewLoginObserver(failedStore{err: cause}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.observer = observer
-	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
+	if err := ingest.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, c.Now())); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -363,7 +363,7 @@ func TestWorkerInternalFailureStopsAdmission(t *testing.T) {
 		t.Fatalf("сбой обработки потерян: %v", err)
 	}
 	// Выход воркера закрывает очередь: приём остановлен вместе с обработкой.
-	if err := w.queue.Enqueue(
+	if err := ingest.Enqueue(
 		ingestEvent(2, dEvent.LoginSucceeded, c.Now()),
 	); err == nil ||
 		errors.Is(err, dError.ErrOverloaded) {
@@ -380,9 +380,9 @@ func TestWorkerInternalFailureStopsAdmission(t *testing.T) {
 func TestWorkerStopsSchedulingAndHonorsCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newBarrierClock(time.Now())
-		w, _, _, _ := workerFixture(t, memory.DefaultLimits(), c)
+		w, ingest, _, _, _ := workerFixture(t, memory.DefaultLimits(), c)
 		for id := 1; id <= 2; id++ {
-			if err := w.queue.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
+			if err := ingest.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -398,7 +398,7 @@ func TestWorkerStopsSchedulingAndHonorsCancellation(t *testing.T) {
 		if err := waitResult(t, done); err != nil {
 			t.Fatalf("отмена не завершила воркер: %v", err)
 		}
-		if len(w.queue.Events()) != 1 {
+		if len(ingest.Events()) != 1 {
 			t.Fatal("после отмены началась обработка следующего события")
 		}
 	})
@@ -407,8 +407,8 @@ func TestWorkerStopsSchedulingAndHonorsCancellation(t *testing.T) {
 func TestWorkerMaintenanceAndDrain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := &testClock{now: time.Now()}
-		w, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
-		if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginStarted, c.Now())); err != nil {
+		w, ingest, store, recorder, _ := workerFixture(t, memory.DefaultLimits(), c)
+		if err := ingest.Enqueue(ingestEvent(1, dEvent.LoginStarted, c.Now())); err != nil {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
@@ -425,7 +425,7 @@ func TestWorkerMaintenanceAndDrain(t *testing.T) {
 		c.Advance(15 * time.Minute)
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
-		w.queue.Close()
+		ingest.Close()
 		if err := waitResult(t, done); err != nil {
 			t.Fatal(err)
 		}
@@ -446,16 +446,16 @@ func TestWorkerMaintenanceAndDrain(t *testing.T) {
 }
 
 func TestWorkerCancellationWithClosedQueue(t *testing.T) {
-	w, _, _, _ := workerFixture(t, memory.DefaultLimits(), &testClock{now: time.Now()})
-	if err := w.queue.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, time.Now())); err != nil {
+	w, ingest, _, _, _ := workerFixture(t, memory.DefaultLimits(), &testClock{now: time.Now()})
+	if err := ingest.Enqueue(ingestEvent(1, dEvent.LoginSucceeded, time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	w.queue.Close()
+	ingest.Close()
 	w.Stop()
 	if err := w.Run(); err != nil {
 		t.Fatalf("отмена владельцем стала ошибкой воркера: %v", err)
 	}
-	if len(w.queue.Events()) != 1 {
+	if len(ingest.Events()) != 1 {
 		t.Fatal("после отмены началась обработка закрытой очереди")
 	}
 }
@@ -546,9 +546,9 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 			if limits == (memory.Limits{}) {
 				limits = memory.DefaultLimits()
 			}
-			w, store, recorder, logs := workerFixture(t, limits, &testClock{now: now})
+			w, ingest, store, recorder, logs := workerFixture(t, limits, &testClock{now: now})
 			for _, e := range tt.before {
-				if err := w.queue.Enqueue(e); err != nil {
+				if err := ingest.Enqueue(e); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -560,7 +560,7 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 			}()
 			t.Cleanup(func() {
 				w.Stop()
-				w.queue.Close()
+				ingest.Close()
 				waitSignal(t, finished)
 			})
 			ready := make(chan struct{}, len(tt.concurrent))
@@ -572,7 +572,7 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 				go func() {
 					ready <- struct{}{}
 					<-barrier
-					results <- w.queue.Enqueue(e)
+					results <- ingest.Enqueue(e)
 				}()
 			}
 			for range tt.concurrent {
@@ -585,12 +585,12 @@ func TestWorkerConcurrentSenders(t *testing.T) {
 				}
 			}
 			for _, e := range tt.after {
-				if err := w.queue.Enqueue(e); err != nil {
+				if err := ingest.Enqueue(e); err != nil {
 					t.Fatal(err)
 				}
 			}
 			w.StopMaintenance()
-			w.queue.Close()
+			ingest.Close()
 			if err := waitResult(t, done); err != nil {
 				t.Fatal(err)
 			}

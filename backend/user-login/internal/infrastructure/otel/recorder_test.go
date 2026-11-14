@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel/oteltest"
@@ -27,7 +27,7 @@ func (c fixedClock) Now() time.Time { return c.now }
 
 type stack struct {
 	recorder *otel.Recorder
-	observer *application.LoginObserver
+	observer *usecase.LoginObserver
 	now      time.Time
 	next     int
 	ids      []string
@@ -66,7 +66,7 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	observer, err := application.NewLoginObserver(store, fixedClock{now})
+	observer, err := usecase.NewLoginObserver(store, fixedClock{now})
 	if err != nil {
 		t.Fatal(err)
 	}

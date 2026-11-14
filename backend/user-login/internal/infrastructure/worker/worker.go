@@ -8,11 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/vendelev/sre-metrics/user-login/internal/application"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 )
 
 // Worker выполняет последовательную обработку очереди событий: один цикл
@@ -20,10 +19,11 @@ import (
 // принадлежит владельцу остановки: StopMaintenance прекращает планирование
 // обслуживания, Stop отменяет весь воркер.
 type Worker struct {
-	observer *application.LoginObserver
-	queue    *queue.EventQueue
-	interval time.Duration
-	logger   *slog.Logger
+	observer    *usecase.LoginObserver
+	events      <-chan *dEvent.Request
+	closeEvents func()
+	interval    time.Duration
+	logger      *slog.Logger
 
 	workerCtx       context.Context
 	stop            context.CancelFunc
@@ -36,8 +36,9 @@ type Worker struct {
 // успешного запуска. Родитель не распространяет отмену — контекст остановки
 // сервиса не отменяет воркер.
 func New(
-	observer *application.LoginObserver,
-	events *queue.EventQueue,
+	observer *usecase.LoginObserver,
+	events <-chan *dEvent.Request,
+	closeEvents func(),
 	maintenanceInterval time.Duration,
 	logger *slog.Logger,
 ) (*Worker, error) {
@@ -45,7 +46,10 @@ func New(
 		return nil, errors.New("не задана операция обработки событий")
 	}
 	if events == nil {
-		return nil, errors.New("не задана очередь приёма событий")
+		return nil, errors.New("не задан канал приёма событий")
+	}
+	if closeEvents == nil {
+		return nil, errors.New("не задана операция закрытия приёма")
 	}
 	if logger == nil {
 		return nil, errors.New("не задан журнал сервиса")
@@ -57,7 +61,8 @@ func New(
 	maintenanceCtx, stopMaintenance := context.WithCancel(workerCtx)
 	return &Worker{
 		observer:        observer,
-		queue:           events,
+		events:          events,
+		closeEvents:     closeEvents,
 		interval:        maintenanceInterval,
 		logger:          logger,
 		workerCtx:       workerCtx,
@@ -71,11 +76,11 @@ func New(
 // владельцем или закрытия очереди. Закрытый канал приёма дочитывается до
 // конца; отмена владельцем не является ошибкой задачи: исчерпание бюджета
 // сообщает shutdown. Ошибки самих Process и Maintain сохраняются, даже если
-// отмена произошла одновременно. Выход закрывает очередь: новые постановки
-// невозможны и при отказе воркера.
+// отмена произошла одновременно. Выход закрывает приём через переданную
+// операцию: новые постановки невозможны и при отказе воркера.
 func (w *Worker) Run() error {
 	defer w.stop()
-	defer w.queue.Close()
+	defer w.closeEvents()
 	return w.loop(w.workerCtx, w.maintenanceCtx.Done())
 }
 
@@ -106,7 +111,7 @@ func (w *Worker) loop(ctx context.Context, maintenanceStopped <-chan struct{}) e
 			ticker.Stop()
 			ticks = nil
 			maintenanceStopped = nil
-		case event, ok := <-w.queue.Events():
+		case event, ok := <-w.events:
 			if !ok {
 				return nil
 			}

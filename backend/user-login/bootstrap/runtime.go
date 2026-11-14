@@ -46,8 +46,8 @@ type Module struct {
 	failed     chan struct{}
 }
 
-// Handler возвращает предметный HTTP-обработчик приёма событий для общего
-// сервера core.
+// Handler возвращает предметный HTTP-обработчик модуля для корневой
+// сборки приложения. Композицию префиксов выполняет приложение, а не модуль.
 func (m *Module) Handler() http.Handler {
 	return m.handler
 }

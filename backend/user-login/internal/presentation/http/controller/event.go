@@ -1,4 +1,4 @@
-package httpapi
+package controller
 
 import (
 	"encoding/json"

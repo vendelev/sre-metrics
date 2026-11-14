@@ -117,7 +117,7 @@ func (s *Store) Commit(
 	measurements dScenario.Measurements,
 ) error {
 	entry, exists := s.scenarios[loginScenario.ID()]
-	// Предусловия комплекта обеспечивает application. После сохранения отметок
+	// Предусловия комплекта обеспечивает usecase. После сохранения отметок
 	// вызывается только локальный SDK. Между инструментами нет транзакции или механизма отката.
 	if !exists {
 		entry = &record{eventIDs: make(map[uuid.UUID]struct{})}

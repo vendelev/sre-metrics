@@ -1,4 +1,4 @@
-package httpapi_test
+package controller_test
 
 import (
 	"bytes"
@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
-	"github.com/vendelev/sre-metrics/user-login/internal/presentation/httpapi"
+	"github.com/vendelev/sre-metrics/user-login/internal/presentation/http/controller"
 )
 
 var (
@@ -35,20 +36,20 @@ func newTestClock() *testClock {
 }
 
 // fixture наблюдает передачу разобранных событий на рабочей границе accept.
-// Реальные очередь, обработка и SDK проверяются вместе в тестах сервиса.
+// Реальные очередь, обработка и SDK проверяются вместе в тестах сервиса и bootstrap.
 type fixture struct {
-	handler  http.Handler
-	accepted []event.Request
-	logs     bytes.Buffer
-	calls    int
-	clock    *testClock
+	controller *controller.Controller
+	accepted   []event.Request
+	logs       bytes.Buffer
+	calls      int
+	clock      *testClock
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{clock: newTestClock()}
 	var err error
-	f.handler, err = httpapi.NewRouter(func(e *event.Request) error {
+	f.controller, err = controller.New(func(e *event.Request) error {
 		f.calls++
 		f.accepted = append(f.accepted, e.Clone())
 		return nil
@@ -70,13 +71,13 @@ func eventBody(id uuid.UUID, kind, source, at, mode string) string {
 
 func startedBody() string { return eventBody(eventID, "login_started", "mis", wireTime, "") }
 
-func request(handler http.Handler, method, mediaType, body string) *httptest.ResponseRecorder {
+func request(handler http.HandlerFunc, method, mediaType, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "/events", strings.NewReader(body))
 	if mediaType != "" {
 		r.Header.Set("Content-Type", mediaType)
 	}
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, r)
+	handler(w, r)
 	return w
 }
 
@@ -105,10 +106,10 @@ func assertResponse(t *testing.T, w *httptest.ResponseRecorder, status int, code
 
 func post(t *testing.T, f *fixture, body string, status int, code string) {
 	t.Helper()
-	assertResponse(t, request(f.handler, "POST", "application/json", body), status, code)
+	assertResponse(t, request(f.controller.AcceptEvent, "POST", "application/json", body), status, code)
 }
 
-func TestNewRouter(t *testing.T) {
+func TestNewController(t *testing.T) {
 	accept := func(*event.Request) error { return nil }
 	logger := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
@@ -122,7 +123,7 @@ func TestNewRouter(t *testing.T) {
 		{"нет часов", accept, logger, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := httpapi.NewRouter(tc.accept, tc.logger, tc.clock); err == nil {
+			if _, err := controller.New(tc.accept, tc.logger, tc.clock); err == nil {
 				t.Fatal("невалидная зависимость принята")
 			}
 		})
@@ -132,15 +133,15 @@ func TestNewRouter(t *testing.T) {
 }
 
 // BR-57: 503 overloaded означает только полную очередь, не остановленный приём.
-func TestHandlerClosedQueue(t *testing.T) {
+func TestControllerClosedQueue(t *testing.T) {
 	q := queue.NewEventQueue(1)
 	q.Close()
 	var logs bytes.Buffer
-	h, err := httpapi.NewRouter(q.Enqueue, slog.New(slog.NewJSONHandler(&logs, nil)), newTestClock())
+	c, err := controller.New(q.Enqueue, slog.New(slog.NewJSONHandler(&logs, nil)), newTestClock())
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertResponse(t, request(h, "POST", "application/json", startedBody()), 500, "internal_error")
+	assertResponse(t, request(c.AcceptEvent, "POST", "application/json", startedBody()), 500, "internal_error")
 	if len(q.Events()) != 0 {
 		t.Fatal("закрытая очередь приняла событие")
 	}
@@ -149,7 +150,7 @@ func TestHandlerClosedQueue(t *testing.T) {
 	}
 }
 
-func TestHandlerAcceptsEventTypes(t *testing.T) {
+func TestControllerAcceptsEventTypes(t *testing.T) {
 	for _, tc := range []struct{ kind, source, mode string }{
 		{"login_started", "mis", ""}, {"login_succeeded", "mis", ""},
 		{"login_mode_determined", "auth", "credentials"}, {"login_mode_determined", "auth", "existing_session"},
@@ -174,42 +175,13 @@ func TestHandlerAcceptsEventTypes(t *testing.T) {
 	}
 }
 
-func TestHandlerRoutes(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		path   string
-		status int
-	}{
-		{"/events", 202}, {"/events?test=1", 202}, {"/", 404}, {"/other", 404},
-		{"/events/", 404}, {"/events/extra", 404}, {"/Events", 404}, {"//events", 404}, {"/other/../events", 404},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			t.Parallel()
-			f := newFixture(t)
-			r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(startedBody()))
-			r.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			f.handler.ServeHTTP(w, r)
-			if w.Code != tc.status || w.Header().Get("Location") != "" {
-				t.Fatalf("путь %s: статус %d, заголовки %v", tc.path, w.Code, w.Header())
-			}
-			wantCalls := 0
-			if tc.status == 202 {
-				wantCalls = 1
-				assertResponse(t, w, 202, "")
-			}
-			if f.calls != wantCalls {
-				t.Fatalf("вызовы приёма: %d, ожидалось %d", f.calls, wantCalls)
-			}
-		})
-	}
-}
-
-func TestHandlerMethodsAndMIME(t *testing.T) {
+// Контроллер отвечает согласованно на любой метод, переданный ему владельцем
+// маршрутизации; сами правила регистрации проверяет bootstrap.
+func TestControllerMethodNotAllowed(t *testing.T) {
 	for _, method := range []string{"GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "OTHER"} {
 		t.Run(method, func(t *testing.T) {
 			f := newFixture(t)
-			w := request(f.handler, method, "text/plain", strings.Repeat("!", 4097))
+			w := request(f.controller.MethodNotAllowed, method, "text/plain", strings.Repeat("!", 4097))
 			if w.Header().Get("Allow") != "POST" {
 				t.Fatal("нет Allow: POST")
 			}
@@ -225,10 +197,13 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestControllerMediaTypes(t *testing.T) {
 	for _, mediaType := range []string{"", "text/plain", "application/jsonx", "application/problem+json", "application/json; charset", "application/json; charset=utf-8; charset=ascii"} {
 		t.Run("отказ MIME/"+mediaType, func(t *testing.T) {
 			f := newFixture(t)
-			assertResponse(t, request(f.handler, "POST", mediaType, "!"), 415, "unsupported_media_type")
+			assertResponse(t, request(f.controller.AcceptEvent, "POST", mediaType, "!"), 415, "unsupported_media_type")
 			if f.calls != 0 {
 				t.Fatal("отказ MIME вызвал приём")
 			}
@@ -237,12 +212,12 @@ func TestHandlerMethodsAndMIME(t *testing.T) {
 	for _, mediaType := range []string{"application/json", "Application/JSON", "application/json;", "application/json; charset=utf-8", `application/json; charset="utf-8"; profile="test"`} {
 		t.Run("приём MIME/"+mediaType, func(t *testing.T) {
 			f := newFixture(t)
-			assertResponse(t, request(f.handler, "POST", mediaType, startedBody()), 202, "")
+			assertResponse(t, request(f.controller.AcceptEvent, "POST", mediaType, startedBody()), 202, "")
 		})
 	}
 }
 
-func TestHandlerLargeBody(t *testing.T) {
+func TestControllerLargeBody(t *testing.T) {
 	for _, unknownLength := range []bool{false, true} {
 		for _, size := range []int{4097, 65536} {
 			t.Run(fmt.Sprintf("байт=%d/неизвестная длина=%t", size, unknownLength), func(t *testing.T) {
@@ -254,7 +229,7 @@ func TestHandlerLargeBody(t *testing.T) {
 					r.ContentLength = -1
 				}
 				w := httptest.NewRecorder()
-				f.handler.ServeHTTP(w, r)
+				f.controller.AcceptEvent(w, r)
 				assertResponse(t, w, 202, "")
 				if f.calls != 1 {
 					t.Fatal("большое тело не передано в приём")
@@ -275,19 +250,19 @@ func (failedReader) Read([]byte) (int, error) {
 	return 0, errors.New("ошибка чтения синтетического тела")
 }
 
-func TestHandlerBodyReadFailure(t *testing.T) {
+func TestControllerBodyReadFailure(t *testing.T) {
 	f := newFixture(t)
 	r := httptest.NewRequest("POST", "/events", failedReader{})
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	f.handler.ServeHTTP(w, r)
+	f.controller.AcceptEvent(w, r)
 	assertResponse(t, w, 400, "invalid_event")
 	if f.calls != 0 {
 		t.Fatal("ошибка чтения вызвала приём")
 	}
 }
 
-func TestHandlerAcceptErrorsAndLogging(t *testing.T) {
+func TestControllerAcceptErrorsAndLogging(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		err    error
@@ -307,7 +282,7 @@ func TestHandlerAcceptErrorsAndLogging(t *testing.T) {
 					cause = fmt.Errorf("контекст: %w", cause)
 				}
 				var logs bytes.Buffer
-				h, err := httpapi.NewRouter(
+				c, err := controller.New(
 					func(*event.Request) error { return cause },
 					slog.New(slog.NewJSONHandler(&logs, nil)),
 					newTestClock(),
@@ -315,7 +290,7 @@ func TestHandlerAcceptErrorsAndLogging(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				w := request(h, "POST", "application/json", startedBody())
+				w := request(c.AcceptEvent, "POST", "application/json", startedBody())
 				assertResponse(t, w, tc.status, tc.code)
 				if tc.status != 500 {
 					if logs.Len() != 0 {
