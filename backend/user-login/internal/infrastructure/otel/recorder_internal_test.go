@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
@@ -42,45 +43,19 @@ func TestRecorderResourceFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestResourceDoesNotGenerateInstanceID(t *testing.T) {
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
-	r, err := Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := r.resource.Set().Value("service.instance.id"); ok {
-		t.Fatal("service.instance.id создан без настройки окружения")
-	}
-}
-
-func TestResourceAttributesFromEnvironment(t *testing.T) {
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "host.name=otel-node,deployment.environment.name=test")
-	r, err := Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for key, want := range map[string]string{"host.name": "otel-node", "deployment.environment.name": "test"} {
-		got, ok := r.resource.Set().Value(attribute.Key(key))
-		if !ok || got.AsString() != want {
-			t.Fatalf("атрибут %s из окружения: %v", key, got)
-		}
-	}
-}
-
 func TestPrepareDoesNotStartSDK(t *testing.T) {
-	r, err := Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := Prepare()
 	if r.provider != nil || r.Reader() != nil || r.completed != nil {
-		t.Fatal("Prepare создал SDK")
+		t.Fatal("Prepare создал SDK или инструменты")
 	}
 	if err := r.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestPipelineRejectsLocalRecorder(t *testing.T) {
+// Активация выполняется однократно; изолированный тестовый вариант уже содержит
+// инструменты, рабочий — требует meter запущенного pipeline.
+func TestActivateRejectsRepeatedActivation(t *testing.T) {
 	r, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -90,9 +65,12 @@ func TestPipelineRejectsLocalRecorder(t *testing.T) {
 			t.Error(shutdownErr)
 		}
 	})
-	p, err := StartPipeline(t.Context(), r, testLogger())
-	cleanupPipeline(t, p)
-	if p != nil || err == nil {
-		t.Fatal("экспортный provider добавлен к локальному")
+	if err := r.Activate(nil); err == nil {
+		t.Fatal("принят nil meter")
+	}
+	provider := sdkmetric.NewMeterProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	if err := r.Activate(provider.Meter("duplicate")); err == nil {
+		t.Fatal("разрешена повторная активация")
 	}
 }

@@ -7,18 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"time"
-)
 
-// Config содержит параметры net/http Server. Заполняется сборкой из уже
-// проверенной конфигурации сервиса; формат адреса проверяет ядро при Open.
-type Config struct {
-	Addr              string
-	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	IdleTimeout       time.Duration
-}
+	"github.com/vendelev/sre-metrics/core/config"
+)
 
 // Server владеет HTTP-ресурсами одного запуска. Конструктор только собирает
 // объекты: listener открывает Open на этапе запуска и закрывает один раз,
@@ -30,15 +21,15 @@ type Server struct {
 
 // New собирает сервер из готового handler и журнала http.Server; ресурсы
 // не открываются до Open.
-func New(config Config, handler http.Handler, errorLog *log.Logger) *Server {
+func New(settings config.HTTP, handler http.Handler, errorLog *log.Logger) *Server {
 	return &Server{
 		server: &http.Server{
-			Addr:              config.Addr,
+			Addr:              settings.Addr,
 			Handler:           handler,
-			ReadHeaderTimeout: config.ReadHeaderTimeout,
-			ReadTimeout:       config.ReadTimeout,
-			WriteTimeout:      config.WriteTimeout,
-			IdleTimeout:       config.IdleTimeout,
+			ReadHeaderTimeout: settings.ReadHeaderTimeout,
+			ReadTimeout:       settings.ReadTimeout,
+			WriteTimeout:      settings.WriteTimeout,
+			IdleTimeout:       settings.IdleTimeout,
 			ErrorLog:          errorLog,
 		},
 	}
@@ -53,7 +44,7 @@ func (s *Server) Open(ctx context.Context) error {
 	var listenConfig net.ListenConfig
 	ln, err := listenConfig.Listen(ctx, "tcp", s.server.Addr)
 	if err != nil {
-		return fmt.Errorf("запуск HTTP user-login на %s: %w", s.server.Addr, err)
+		return fmt.Errorf("запуск HTTP на %s: %w", s.server.Addr, err)
 	}
 	s.listener = &listener{Listener: ln}
 	return ctx.Err()
@@ -77,7 +68,7 @@ func (s *Server) Serve() error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("работа HTTP user-login: %w", err)
+		return fmt.Errorf("работа HTTP: %w", err)
 	}
 	return nil
 }
@@ -106,7 +97,7 @@ func (s *Server) CloseListener() error {
 		return nil
 	}
 	if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		return fmt.Errorf("закрытие listener user-login: %w", err)
+		return fmt.Errorf("закрытие listener: %w", err)
 	}
 	return nil
 }
@@ -115,5 +106,5 @@ func shutdownError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("остановка HTTP user-login: %w", err)
+	return fmt.Errorf("остановка HTTP: %w", err)
 }

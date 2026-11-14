@@ -8,7 +8,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/httpserver"
+	"github.com/vendelev/sre-metrics/core/bootstrap"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
@@ -24,23 +24,44 @@ type backgroundTask struct {
 
 // service владеет компонентами и ресурсами одного запуска. Сборка выполняется
 // явной цепочкой конструкторов в app.go; контейнер зависимостей и его
-// lifecycle не используются. Поля после пустой строки — состояние протокола
-// одного запуска: этот файл задаёт его порядок и очистку.
+// lifecycle не используются. HTTP-ресурсы и их задачу владеет runtime core;
+// очередь, воркер и drain остаются во владении user-login. Поля после пустой
+// строки — состояние протокола одного запуска: этот файл задаёт его порядок
+// и очистку.
 type service struct {
-	httpServer *httpserver.Server
+	httpServer *bootstrap.Server
 	worker     *worker.Worker
 	eventQueue *queue.EventQueue
 	recorder   *otel.Recorder
+	metrics    *bootstrap.Metrics
 	cfg        config.Config
 	logger     *slog.Logger
-	pipeline   *otel.Pipeline
 
 	ready      func(net.Addr)
-	serverTask *backgroundTask
 	workerTask *backgroundTask
 	failed     chan struct{}
 	stopOnce   sync.Once
 	stopErr    error // Читается после stopOnce.Do, включая конкурентный повторный вызов.
+}
+
+// taskResult сводит фоновые задачи запуска к общему виду для ожидания
+// и чтения ошибок: HTTP-задачу публикует runtime core, задачу воркера —
+// user-login.
+type taskResult struct {
+	done <-chan struct{}
+	err  func() error // Читается только после закрытия done.
+}
+
+func (s *service) taskResults() []taskResult {
+	tasks := make([]taskResult, 0, 2)
+	if serve := s.httpServer.ServeTask(); serve != nil {
+		tasks = append(tasks, taskResult{done: serve.Done(), err: serve.Err})
+	}
+	if s.workerTask != nil {
+		tasks = append(tasks, taskResult{done: s.workerTask.done,
+			err: func() error { return s.workerTask.err }})
+	}
+	return tasks
 }
 
 func (s *service) startTask(operation func() error) *backgroundTask {
@@ -99,14 +120,13 @@ func (s *service) startWorker(ctx context.Context) error {
 	return nil
 }
 
-// startHTTP запускает фоновую задачу Serve; техническую интерпретацию её
-// результата выполняет httpserver.Server.
+// startHTTP запускает фоновую задачу Serve; задание и уведомление о его
+// ошибке принадлежат runtime core.
 func (s *service) startHTTP(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.serverTask = s.startTask(s.httpServer.Serve)
-	return nil
+	return s.httpServer.StartServe(ctx)
 }
 
 // announceReady объявляет готовность только после успешных фаз запуска
@@ -146,7 +166,7 @@ func (s *service) shutdown(ctx context.Context) error {
 		defer stopDeadline()
 	}
 	var httpErr error
-	if s.serverTask != nil {
+	if s.httpServer.ServeTask() != nil {
 		// При неуспехе Shutdown соединения закрываются принудительно внутри
 		// компонента, ошибки объединяются.
 		httpErr = s.httpServer.Shutdown(ctx)
@@ -163,10 +183,10 @@ func (s *service) shutdown(ctx context.Context) error {
 	}
 	s.worker.Stop()
 	var sdkErr error
-	if s.pipeline != nil {
+	if s.metrics != nil {
 		// Финальный экспорт — best effort с оставшимся временем. Даже при
 		// истёкшем контексте передаётся команда освобождения ресурсов.
-		if err := s.pipeline.Shutdown(ctx); err != nil {
+		if err := s.metrics.Shutdown(ctx); err != nil {
 			sdkErr = fmt.Errorf("освобождение SDK метрик: %w", err)
 		}
 	}
@@ -179,10 +199,7 @@ func (s *service) shutdown(ctx context.Context) error {
 }
 
 func (s *service) waitTasks(ctx context.Context) error {
-	for _, task := range []*backgroundTask{s.serverTask, s.workerTask} {
-		if task == nil {
-			continue
-		}
+	for _, task := range s.taskResults() {
 		select {
 		case <-task.done:
 		case <-ctx.Done():
@@ -197,13 +214,10 @@ func (s *service) waitTasks(ctx context.Context) error {
 
 func (s *service) taskErrors() error {
 	var result error
-	for _, task := range []*backgroundTask{s.serverTask, s.workerTask} {
-		if task == nil {
-			continue
-		}
+	for _, task := range s.taskResults() {
 		select {
 		case <-task.done:
-			result = errors.Join(result, task.err)
+			result = errors.Join(result, task.err())
 		default:
 		}
 	}
@@ -214,10 +228,11 @@ func (s *service) startSDK(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	pipeline, err := otel.StartPipeline(ctx, s.recorder, s.logger.With("component", "otel"))
-	s.pipeline = pipeline
-	if err != nil {
+	if err := s.metrics.Start(ctx); err != nil {
 		return fmt.Errorf("запуск OTLP pipeline: %w", err)
+	}
+	if err := s.recorder.Activate(s.metrics.Meter(otel.ScopeName)); err != nil {
+		return fmt.Errorf("активация метрик user-login: %w", err)
 	}
 	return ctx.Err()
 }

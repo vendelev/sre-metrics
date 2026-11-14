@@ -10,11 +10,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/vendelev/sre-metrics/core/config"
 )
 
 func newTestServer(t *testing.T, handler http.Handler) *Server {
 	t.Helper()
-	return New(Config{
+	return New(config.HTTP{
 		Addr:              "127.0.0.1:0",
 		ReadHeaderTimeout: 50 * time.Millisecond,
 		ReadTimeout:       time.Second,
@@ -52,7 +54,7 @@ func assertListenerClosed(t *testing.T, srv *Server) {
 }
 
 func TestAddrNilBeforeOpen(t *testing.T) {
-	srv := New(Config{Addr: "127.0.0.1:0"}, http.NotFoundHandler(), nil)
+	srv := New(config.HTTP{Addr: "127.0.0.1:0"}, http.NotFoundHandler(), nil)
 	if srv.Addr() != nil {
 		t.Fatal("адрес доступен до открытия listener")
 	}
@@ -70,7 +72,7 @@ func (l failedAcceptListener) Accept() (net.Conn, error) {
 }
 
 // Ошибка Accept — техническая ошибка Serve. Маршрут этой ошибки в результат
-// запуска сервиса проверяют сервисные тесты через общий механизм задач.
+// запуска сервиса проверяют тесты сборки через общий механизм задач.
 func TestServeReportsAcceptFailure(t *testing.T) {
 	srv := newTestServer(t, http.NotFoundHandler())
 	if err := srv.Open(t.Context()); err != nil {

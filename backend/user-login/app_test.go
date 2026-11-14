@@ -17,11 +17,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/core/bootstrap"
+	coreconfig "github.com/vendelev/sre-metrics/core/config"
+	"github.com/vendelev/sre-metrics/core/oteltest"
 	"github.com/vendelev/sre-metrics/user-login/internal/application"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/httpserver"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/config"
@@ -69,17 +71,17 @@ func (c *barrierClock) Now() time.Time {
 }
 
 func TestNewServiceSharesState(t *testing.T) {
-	r := newServiceReceiver(t)
-	cfg := actualConfig(t, r)
+	r := oteltest.NewReceiver(t)
+	cfg, settings := actualConfig(t, r)
 	cfg.MaintenanceInterval = 5 * time.Millisecond
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
-	app := testService(t, cfg, c)
+	app := testService(t, cfg, settings, c)
 	running := runActual(t, app)
 	if err := sendServiceEvent(t, running, 1, 100, "login_started", c.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.Advance(15 * time.Minute)
-	nextServiceMetrics(t, r, func(_ receivedMetrics, v serviceValues) bool {
+	nextServiceMetrics(t, r, func(_ oteltest.Sample, v serviceValues) bool {
 		return v.completed["unknown"] == 1
 	})
 	if err := running.stop(t); err != nil {
@@ -93,12 +95,12 @@ func TestNewServiceSharesState(t *testing.T) {
 // AC-50–AC-51: настоящая сборка отвечает до обработки, переполнение не ставит
 // событие в очередь, а штатный drain включает принятые события в последний OTLP-пакет.
 func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
-	r := newServiceReceiver(t)
-	cfg := actualConfig(t, r)
+	r := oteltest.NewReceiver(t)
+	cfg, settings := actualConfig(t, r)
 	cfg.EventQueueSize = 2
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	c := newBarrierClock(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
-	app := testService(t, cfg, c)
+	app := testService(t, cfg, settings, c)
 	now := c.Now()
 	// Первое событие попадает в очередь до запуска воркера; барьер затем
 	// останавливает именно Process, а не проверку возраста новых запросов.
@@ -186,10 +188,10 @@ func TestServiceAsyncAdmissionAndQueueDrain(t *testing.T) {
 }
 
 func TestServiceQueuedProcessingFailure(t *testing.T) {
-	r := newServiceReceiver(t)
+	r := oteltest.NewReceiver(t)
 	c := &testClock{now: time.Now()}
-	cfg := actualConfig(t, r)
-	app := testService(t, cfg, c)
+	cfg, settings := actualConfig(t, r)
+	app := testService(t, cfg, settings, c)
 	cause := errors.New("синтетический отказ обработки очереди")
 	observer, err := application.NewLoginObserver(failedStore{err: cause}, c)
 	if err != nil {
@@ -208,12 +210,12 @@ func TestServiceQueuedProcessingFailure(t *testing.T) {
 }
 
 func TestServiceQueueDrainDeadline(t *testing.T) {
-	r := newServiceReceiver(t)
-	cfg := actualConfig(t, r)
+	r := oteltest.NewReceiver(t)
+	cfg, settings := actualConfig(t, r)
 	cfg.ShutdownTimeout = 100 * time.Millisecond
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	c := newBarrierClock(time.Now())
-	app := testService(t, cfg, c)
+	app := testService(t, cfg, settings, c)
 	for id := 1; id <= 2; id++ {
 		if err := app.eventQueue.Enqueue(ingestEvent(id, dEvent.LoginSucceeded, c.Now())); err != nil {
 			t.Fatal(err)
@@ -242,15 +244,16 @@ func TestServiceQueueDrainDeadline(t *testing.T) {
 
 // AC-39: даже уже сохранённый ID не освобождается от проверки возраста при приёме.
 func TestServiceStoredDuplicateAge(t *testing.T) {
-	r := newServiceReceiver(t)
+	r := oteltest.NewReceiver(t)
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
-	app := testService(t, actualConfig(t, r), c)
+	cfg, settings := actualConfig(t, r)
+	app := testService(t, cfg, settings, c)
 	running := runActual(t, app)
 	at := c.Now().Add(-29 * time.Minute)
 	if err := sendServiceEvent(t, running, 1, 100, "login_succeeded", at); err != nil {
 		t.Fatal(err)
 	}
-	nextServiceMetrics(t, r, func(_ receivedMetrics, v serviceValues) bool { return v.completed["success"] == 1 })
+	nextServiceMetrics(t, r, func(_ oteltest.Sample, v serviceValues) bool { return v.completed["success"] == 1 })
 	c.Advance(2 * time.Minute)
 	body := fmt.Sprintf(
 		`{"event_id":"019aabcd-0000-7000-8000-000000000001","scenario_id":"019aabcd-0000-7000-9000-000000000064","occurred_at":%q,"source":"mis","type":"login_succeeded"}`,
@@ -282,17 +285,20 @@ func TestServiceStoredDuplicateAge(t *testing.T) {
 	}
 }
 
-func testService(t *testing.T, cfg *config.Config, c contract.Clock) *service {
+func testService(t *testing.T, cfg *config.Config, settings coreconfig.HTTP, c contract.Clock) *service {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.DiscardHandler)
-	app, err := newService(cfg, logger, c)
+	app, err := newService(cfg, settings, logger, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app.pipeline != nil || app.recorder.Reader() != nil {
+	if app.recorder.Reader() != nil || app.recorder.Activated() {
 		t.Fatal("SDK запущен при сборке")
 	}
 	return app
@@ -336,9 +342,9 @@ func ingestEvent(id int, kind dEvent.Type, at time.Time) *dEvent.Request {
 }
 
 func TestNewServiceCopiesConfig(t *testing.T) {
-	cfg := actualConfig(t, newServiceReceiver(t))
+	cfg, settings := actualConfig(t, oteltest.NewReceiver(t))
 	want := *cfg
-	app := testService(t, cfg, clock.RealTime{})
+	app := testService(t, cfg, settings, clock.RealTime{})
 	*cfg = config.Config{}
 	if app.cfg != want {
 		t.Fatal("изменение исходной конфигурации повлияло на собранный сервис")
@@ -371,16 +377,16 @@ func TestRunBindFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	r := newServiceReceiver(t)
-	cfg := actualConfig(t, r)
-	cfg.ListenAddr = listener.Addr().String()
-	app := testService(t, cfg, clock.RealTime{})
+	r := oteltest.NewReceiver(t)
+	cfg, settings := actualConfig(t, r)
+	settings.Addr = listener.Addr().String()
+	app := testService(t, cfg, settings, clock.RealTime{})
 	ready := false
 	if err := app.run(t.Context(), func(net.Addr) { ready = true }); err == nil ||
 		!strings.Contains(err.Error(), "запуск HTTP") {
 		t.Fatalf("ошибка занятого адреса потеряна: %v", err)
 	}
-	if ready || app.pipeline != nil || app.workerTask != nil || app.serverTask != nil {
+	if ready || app.recorder.Activated() || app.workerTask != nil || app.httpServer.ServeTask() != nil {
 		t.Fatal("после ошибки bind запущены компоненты или объявлена готовность")
 	}
 }
@@ -388,13 +394,16 @@ func TestRunBindFailure(t *testing.T) {
 func TestRunCancelledBeforeStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	r := newServiceReceiver(t)
-	app := testService(t, actualConfig(t, r), clock.RealTime{})
+	r := oteltest.NewReceiver(t)
+	app := func() *service {
+		cfg, settings := actualConfig(t, r)
+		return testService(t, cfg, settings, clock.RealTime{})
+	}()
 	ready := false
 	if err := app.run(ctx, func(net.Addr) { ready = true }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("отмена до запуска не возвращена как ошибка: %v", err)
 	}
-	if ready || app.httpServer.Addr() != nil || app.pipeline != nil {
+	if ready || app.httpServer.Addr() != nil || app.recorder.Activated() {
 		t.Fatal("при отмене до запуска открыты ресурсы или объявлена готовность")
 	}
 }
@@ -421,10 +430,10 @@ func TestRunMaintenanceFailure(t *testing.T) {
 			name = "одновременно с отменой"
 		}
 		t.Run(name, func(t *testing.T) {
-			r := newServiceReceiver(t)
-			cfg := actualConfig(t, r)
+			r := oteltest.NewReceiver(t)
+			cfg, settings := actualConfig(t, r)
 			cfg.MaintenanceInterval = time.Millisecond
-			app := testService(t, cfg, clock.RealTime{})
+			app := testService(t, cfg, settings, clock.RealTime{})
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			cause := errors.New("управляемый сбой обслуживания")
@@ -451,7 +460,7 @@ func TestNewServiceConstructorError(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
 	cfg.MaxScenarios = 0
-	app, err := newService(&cfg, slog.New(slog.DiscardHandler), clock.RealTime{})
+	app, err := newService(&cfg, coreconfig.Default(), slog.New(slog.DiscardHandler), clock.RealTime{})
 	if err == nil || !strings.Contains(err.Error(), "лимиты сценариев и событий должны быть положительными") {
 		t.Fatalf("ошибка конструктора memory потеряна: %v", err)
 	}
@@ -493,10 +502,10 @@ func waitListenerClosed(t *testing.T, address net.Addr) {
 func TestStartupCancellationBetweenPhases(t *testing.T) {
 	for _, phase := range []string{"после bind", "после SDK", "после воркера", "после HTTP"} {
 		t.Run(phase, func(t *testing.T) {
-			r := newServiceReceiver(t)
-			cfg := actualConfig(t, r)
+			r := oteltest.NewReceiver(t)
+			cfg, settings := actualConfig(t, r)
 			t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
-			app := testService(t, cfg, clock.RealTime{})
+			app := testService(t, cfg, settings, clock.RealTime{})
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			t.Cleanup(func() { _ = app.stop(t.Context()) })
@@ -532,14 +541,14 @@ func TestStartupCancellationBetweenPhases(t *testing.T) {
 				t.Fatal("отменённый запуск объявлен готовым")
 			}
 			if phase == "после bind" {
-				if app.pipeline != nil || r.calls.Load() != 0 {
+				if app.recorder.Activated() || r.Calls() != 0 {
 					t.Fatal("SDK запущен до соответствующей фазы")
 				}
 			} else if lastServiceMetrics(t, r).histogram != nil {
 				t.Fatal("фиктивное наблюдение при очистке")
 			}
-			before := r.calls.Load()
-			if err := app.stop(ctx); err != nil || r.calls.Load() != before {
+			before := r.Calls()
+			if err := app.stop(ctx); err != nil || r.Calls() != before {
 				t.Fatalf("повторная очистка изменила результат или повторила экспорт: %v", err)
 			}
 		})
@@ -547,17 +556,17 @@ func TestStartupCancellationBetweenPhases(t *testing.T) {
 }
 
 func TestStopConcurrentCallsShareCleanup(t *testing.T) {
-	r := newServiceReceiver(t)
-	r.fail.Store(true)
-	r.hold.Store(true)
-	cfg := actualConfig(t, r)
+	r := oteltest.NewReceiver(t)
+	r.SetFail(true)
+	r.SetHold(true)
+	cfg, settings := actualConfig(t, r)
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
-	app := testService(t, cfg, clock.RealTime{})
+	app := testService(t, cfg, settings, clock.RealTime{})
 	running := runActual(t, app)
-	release := sync.OnceFunc(func() { close(r.release) })
+	release := sync.OnceFunc(r.Release)
 	defer release()
 	running.cancel()
-	waitSignal(t, r.entered)
+	waitSignal(t, r.Entered())
 	repeated := make(chan error, 1)
 	attempted := make(chan struct{})
 	go func() { close(attempted); repeated <- app.stop(t.Context()) }()
@@ -568,14 +577,14 @@ func TestStopConcurrentCallsShareCleanup(t *testing.T) {
 	if first == nil || second == nil || !errors.Is(first, second) {
 		t.Fatalf("конкурентные остановки не сохранили одну ошибку: %v / %v", first, second)
 	}
-	if err := app.stop(t.Context()); !errors.Is(err, second) || r.calls.Load() != 1 {
+	if err := app.stop(t.Context()); !errors.Is(err, second) || r.Calls() != 1 {
 		t.Fatal("повторная очистка изменила результат или повторила экспорт")
 	}
 }
 
 // Для точной проверки бюджета достаточно фаз ожидания без SDK и сети.
 // Реальный экспорт с оставшимся бюджетом проверяется в app_otlp_test.go,
-// механизм listener и его закрытие — в пакете httpserver.
+// механизм listener и его закрытие — в пакете httpserver модуля core.
 func TestShutdownUsesOneBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -587,18 +596,17 @@ func TestShutdownUsesOneBudget(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				app := &service{
-					cfg:        config.Default(),
-					httpServer: httpserver.New(httpserver.Config{}, http.NotFoundHandler(), log.New(io.Discard, "", 0)),
+					cfg: config.Default(),
+					httpServer: bootstrap.NewServer(
+						coreconfig.HTTP{},
+						http.NotFoundHandler(),
+						log.New(io.Discard, "", 0),
+					),
 					worker:     idleWorker(t),
 					eventQueue: queue.NewEventQueue(1),
 				}
-				app.serverTask = &backgroundTask{done: make(chan struct{})}
 				app.workerTask = &backgroundTask{done: make(chan struct{})}
 				started := time.Now()
-				go func() {
-					time.Sleep(3 * time.Second)
-					close(app.serverTask.done)
-				}()
 				var err error
 				if tc.rollback {
 					ctx, cancel := context.WithCancel(t.Context())
@@ -632,11 +640,11 @@ func TestShutdownUsesOneBudget(t *testing.T) {
 // пакет httpserver. Здесь проверяется, что при отмене запуска ошибка
 // финального экспорта SDK сохраняется, а повторная очистка её не повторяет.
 func TestCancellationPreservesExportError(t *testing.T) {
-	r := newServiceReceiver(t)
-	r.fail.Store(true)
-	cfg := actualConfig(t, r)
+	r := oteltest.NewReceiver(t)
+	r.SetFail(true)
+	cfg, settings := actualConfig(t, r)
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
-	app := testService(t, cfg, clock.RealTime{})
+	app := testService(t, cfg, settings, clock.RealTime{})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	t.Cleanup(func() { _ = app.stop(t.Context()) })
@@ -653,7 +661,7 @@ func TestCancellationPreservesExportError(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "освобождение SDK метрик") {
 		t.Fatalf("ошибка финального экспорта потеряна при отмене: %v", err)
 	}
-	if r.calls.Load() != 1 {
+	if r.Calls() != 1 {
 		t.Fatal("финальная отправка не состоялась или повторилась")
 	}
 	assertListenerClosed(t, app)

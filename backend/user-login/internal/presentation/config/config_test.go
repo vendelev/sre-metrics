@@ -36,12 +36,9 @@ func validDefault() config.Config {
 func TestLoadDefaults(t *testing.T) {
 	setupEnvironment(t)
 	want := config.Config{
-		ListenAddr:     ":8080",
 		EventQueueSize: 1024,
 		MaxScenarios:   10_000, MaxEventsPerScenario: 32,
-		MaintenanceInterval: time.Second, HTTPReadHeaderTimeout: time.Second,
-		HTTPReadTimeout: 2 * time.Second, HTTPWriteTimeout: 2 * time.Second,
-		HTTPIdleTimeout: 30 * time.Second, ShutdownTimeout: 10 * time.Second,
+		MaintenanceInterval: time.Second, ShutdownTimeout: 10 * time.Second,
 	}
 	got, err := config.Load()
 	if err != nil || got != want {
@@ -53,23 +50,28 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// Настройки модуля и ядра независимы: переменные core не влияют на Load модуля.
+func TestLoadIgnoresCoreEnvironment(t *testing.T) {
+	setupEnvironment(t)
+	t.Setenv("CORE_HTTP_LISTEN_ADDR", "127.0.0.1:9999")
+	t.Setenv("CORE_HTTP_READ_TIMEOUT", "5s")
+	got, err := config.Load()
+	if err != nil || got != validDefault() {
+		t.Fatalf("переменные ядра повлияли на настройки модуля: %+v, %v", got, err)
+	}
+}
+
 func TestLoadOverrides(t *testing.T) {
 	setupEnvironment(t)
 	values := map[string]string{
-		"USER_LOGIN_LISTEN_ADDR":      "127.0.0.1:0",
 		"USER_LOGIN_EVENT_QUEUE_SIZE": "17",
 		"USER_LOGIN_MAX_SCENARIOS":    "20000", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO": "64",
-		"USER_LOGIN_MAINTENANCE_INTERVAL": "500ms", "USER_LOGIN_HTTP_READ_HEADER_TIMEOUT": "750ms",
-		"USER_LOGIN_HTTP_READ_TIMEOUT": "3s", "USER_LOGIN_HTTP_WRITE_TIMEOUT": "4s",
-		"USER_LOGIN_HTTP_IDLE_TIMEOUT": "1m", "USER_LOGIN_SHUTDOWN_TIMEOUT": "15s",
+		"USER_LOGIN_MAINTENANCE_INTERVAL": "500ms", "USER_LOGIN_SHUTDOWN_TIMEOUT": "15s",
 	}
 	want := config.Config{
-		ListenAddr:     "127.0.0.1:0",
 		EventQueueSize: 17,
 		MaxScenarios:   20_000, MaxEventsPerScenario: 64,
-		MaintenanceInterval: 500 * time.Millisecond, HTTPReadHeaderTimeout: 750 * time.Millisecond,
-		HTTPReadTimeout: 3 * time.Second, HTTPWriteTimeout: 4 * time.Second,
-		HTTPIdleTimeout: time.Minute, ShutdownTimeout: 15 * time.Second,
+		MaintenanceInterval: 500 * time.Millisecond, ShutdownTimeout: 15 * time.Second,
 	}
 	t.Run("переопределения", func(t *testing.T) {
 		for name, value := range values {
@@ -98,11 +100,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{"нулевая очередь", "USER_LOGIN_EVENT_QUEUE_SIZE", "0"},
 		{"отрицательная очередь", "USER_LOGIN_EVENT_QUEUE_SIZE", "-1"},
 		{"отрицательный лимит", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO", "-1"},
-		{"формат длительности", "USER_LOGIN_HTTP_READ_TIMEOUT", "2"},
-		{"нулевой timeout", "USER_LOGIN_HTTP_IDLE_TIMEOUT", "0s"},
+		{"формат длительности", "USER_LOGIN_MAINTENANCE_INTERVAL", "2"},
 		{"отрицательная длительность", "USER_LOGIN_MAINTENANCE_INTERVAL", "-1s"},
 		{"слишком редкое обслуживание", "USER_LOGIN_MAINTENANCE_INTERVAL", "61s"},
-		{"заголовки дольше запроса", "USER_LOGIN_HTTP_READ_HEADER_TIMEOUT", "3s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(tc.env, tc.value)
@@ -123,10 +123,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 func TestLoadEmptyValuesUseDefaults(t *testing.T) {
 	setupEnvironment(t)
 	for _, name := range []string{
-		"USER_LOGIN_LISTEN_ADDR", "USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO",
+		"USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_MAX_EVENTS_PER_SCENARIO",
 		"USER_LOGIN_EVENT_QUEUE_SIZE",
-		"USER_LOGIN_MAINTENANCE_INTERVAL", "USER_LOGIN_HTTP_READ_HEADER_TIMEOUT", "USER_LOGIN_HTTP_READ_TIMEOUT",
-		"USER_LOGIN_HTTP_WRITE_TIMEOUT", "USER_LOGIN_HTTP_IDLE_TIMEOUT", "USER_LOGIN_SHUTDOWN_TIMEOUT",
+		"USER_LOGIN_MAINTENANCE_INTERVAL", "USER_LOGIN_SHUTDOWN_TIMEOUT",
 	} {
 		t.Setenv(name, "")
 	}
@@ -139,12 +138,12 @@ func TestLoadEmptyValuesUseDefaults(t *testing.T) {
 func TestLoadReportsAllParseErrors(t *testing.T) {
 	setupEnvironment(t)
 	t.Setenv("USER_LOGIN_MAX_SCENARIOS", "synthetic-secret-int")
-	t.Setenv("USER_LOGIN_HTTP_READ_TIMEOUT", "synthetic-secret-duration")
+	t.Setenv("USER_LOGIN_MAINTENANCE_INTERVAL", "synthetic-secret-duration")
 	got, err := config.Load()
 	if err == nil || got != (config.Config{}) {
 		t.Fatalf("ожидался отказ загрузки: %+v, %v", got, err)
 	}
-	for _, name := range []string{"USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_HTTP_READ_TIMEOUT"} {
+	for _, name := range []string{"USER_LOGIN_MAX_SCENARIOS", "USER_LOGIN_MAINTENANCE_INTERVAL"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Fatalf("ошибка не содержит %s: %v", name, err)
 		}
@@ -179,7 +178,6 @@ func TestValidateBoundaries(t *testing.T) {
 		change func(*config.Config)
 	}{
 		{"граница интервала", func(c *config.Config) { c.MaintenanceInterval = time.Minute }},
-		{"граница заголовков", func(c *config.Config) { c.HTTPReadHeaderTimeout = c.HTTPReadTimeout }},
 		{"бюджет остановки меньше HTTP-тайм-аутов", func(c *config.Config) {
 			c.ShutdownTimeout = time.Millisecond
 		}},

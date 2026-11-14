@@ -11,32 +11,23 @@ import (
 
 // Config содержит проверяемые настройки одного запуска сервиса.
 // После сборки компонентов настройки не изменяются.
+// HTTP-адрес и тайм-ауты net/http принадлежат ядру core (CORE_HTTP_*).
 type Config struct {
-	ListenAddr            string        `env:"USER_LOGIN_LISTEN_ADDR"`
-	EventQueueSize        int           `env:"USER_LOGIN_EVENT_QUEUE_SIZE"`
-	MaxScenarios          int           `env:"USER_LOGIN_MAX_SCENARIOS"`
-	MaxEventsPerScenario  int           `env:"USER_LOGIN_MAX_EVENTS_PER_SCENARIO"`
-	MaintenanceInterval   time.Duration `env:"USER_LOGIN_MAINTENANCE_INTERVAL"`
-	HTTPReadHeaderTimeout time.Duration `env:"USER_LOGIN_HTTP_READ_HEADER_TIMEOUT"`
-	HTTPReadTimeout       time.Duration `env:"USER_LOGIN_HTTP_READ_TIMEOUT"`
-	HTTPWriteTimeout      time.Duration `env:"USER_LOGIN_HTTP_WRITE_TIMEOUT"`
-	HTTPIdleTimeout       time.Duration `env:"USER_LOGIN_HTTP_IDLE_TIMEOUT"`
-	ShutdownTimeout       time.Duration `env:"USER_LOGIN_SHUTDOWN_TIMEOUT"`
+	EventQueueSize       int           `env:"USER_LOGIN_EVENT_QUEUE_SIZE"`
+	MaxScenarios         int           `env:"USER_LOGIN_MAX_SCENARIOS"`
+	MaxEventsPerScenario int           `env:"USER_LOGIN_MAX_EVENTS_PER_SCENARIO"`
+	MaintenanceInterval  time.Duration `env:"USER_LOGIN_MAINTENANCE_INTERVAL"`
+	ShutdownTimeout      time.Duration `env:"USER_LOGIN_SHUTDOWN_TIMEOUT"`
 }
 
 // Default возвращает начальные лимиты контракта и согласованные настройки запуска.
 func Default() Config {
 	return Config{
-		ListenAddr:            ":8080",
-		EventQueueSize:        1024,
-		MaxScenarios:          10_000,
-		MaxEventsPerScenario:  32,
-		MaintenanceInterval:   time.Second,
-		HTTPReadHeaderTimeout: time.Second,
-		HTTPReadTimeout:       2 * time.Second,
-		HTTPWriteTimeout:      2 * time.Second,
-		HTTPIdleTimeout:       30 * time.Second,
-		ShutdownTimeout:       10 * time.Second,
+		EventQueueSize:       1024,
+		MaxScenarios:         10_000,
+		MaxEventsPerScenario: 32,
+		MaintenanceInterval:  time.Second,
+		ShutdownTimeout:      10 * time.Second,
 	}
 }
 
@@ -81,10 +72,6 @@ func (c *Config) Validate() error {
 		{"MaxScenarios", int64(c.MaxScenarios)},
 		{"MaxEventsPerScenario", int64(c.MaxEventsPerScenario)},
 		{"MaintenanceInterval", int64(c.MaintenanceInterval)},
-		{"HTTPReadHeaderTimeout", int64(c.HTTPReadHeaderTimeout)},
-		{"HTTPReadTimeout", int64(c.HTTPReadTimeout)},
-		{"HTTPWriteTimeout", int64(c.HTTPWriteTimeout)},
-		{"HTTPIdleTimeout", int64(c.HTTPIdleTimeout)},
 		{"ShutdownTimeout", int64(c.ShutdownTimeout)},
 	} {
 		if setting.value <= 0 {
@@ -94,14 +81,6 @@ func (c *Config) Validate() error {
 
 	if c.MaintenanceInterval > time.Minute {
 		return fmt.Errorf("%s: интервал не должен превышать 1m", envName("MaintenanceInterval"))
-	}
-
-	if c.HTTPReadHeaderTimeout > c.HTTPReadTimeout {
-		return fmt.Errorf(
-			"%s: значение не должно превышать %s",
-			envName("HTTPReadHeaderTimeout"),
-			envName("HTTPReadTimeout"),
-		)
 	}
 
 	return nil

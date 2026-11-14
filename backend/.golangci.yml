@@ -80,15 +80,44 @@ linters:
                 user-login-isolation:
                     files:
                         - "${base-path}/user-login/*.go"
-                        - "${base-path}/user-login/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "user-login может импортировать только собственные пакеты и явно выделенные общие пакеты platform."
+                          desc: "корень user-login может импортировать только собственные пакеты, публичную сборку core и явно выделенные общие пакеты platform."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
                         - "github.com/vendelev/sre-metrics/user-login/"
                         - "github.com/vendelev/sre-metrics/platform/"
+                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
+                        - "github.com/vendelev/sre-metrics/core/config$"
+                        - "github.com/vendelev/sre-metrics/core/oteltest$"
+                    list-mode: lax
+                user-login-internal-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/*.go"
+                        - "${base-path}/user-login/internal/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/core"
+                          desc: "внутренние слои user-login не зависят от core: публичную сборку использует только корень модуля."
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты platform."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/user-login$"
+                        - "github.com/vendelev/sre-metrics/user-login/"
+                        - "github.com/vendelev/sre-metrics/platform/"
+                    list-mode: lax
+                core-isolation:
+                    files:
+                        - "${base-path}/core/*.go"
+                        - "${base-path}/core/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "core не импортирует функциональные модули и пакеты вне core."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/core$"
+                        - "github.com/vendelev/sre-metrics/core/"
                     list-mode: lax
                 domain:
                     files:

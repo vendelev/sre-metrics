@@ -83,10 +83,8 @@ func TestPeriodicReaderOwnership(t *testing.T) {
 		)
 		cleanupReader(t, reader)
 		res := resource.Environment()
-		r, err := recorderWithReader(res, reader)
-		if err != nil {
-			t.Fatal(err)
-		}
+		provider := newProvider(res, reader, nil)
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 		synctest.Wait()
 		if exporter.exports.Load() != 0 {
 			t.Fatal("экспорт до первого интервала")
@@ -110,7 +108,7 @@ func TestPeriodicReaderOwnership(t *testing.T) {
 			t.Fatal("периодичность не восстановилась")
 		}
 		before = exporter.exports.Load()
-		if err := r.Shutdown(t.Context()); err != nil {
+		if err := provider.Shutdown(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if exporter.exports.Load() != before+1 || !exporter.closed.Load() || exporter.active.Load() != 0 {
@@ -142,9 +140,8 @@ func TestPeriodicReaderSDKEnvironment(t *testing.T) {
 		reader := sdkmetric.NewPeriodicReader(exporter)
 		cleanupReader(t, reader)
 		res := resource.Environment()
-		if _, err := recorderWithReader(res, reader); err != nil {
-			t.Fatal(err)
-		}
+		provider := newProvider(res, reader, nil)
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 		time.Sleep(999 * time.Millisecond)
 		synctest.Wait()
 		if exporter.exports.Load() != 0 {
@@ -178,10 +175,7 @@ func TestPeriodicReaderShutdownCancelsInflight(t *testing.T) {
 		)
 		cleanupReader(t, reader)
 		res := resource.Environment()
-		r, err := recorderWithReader(res, reader)
-		if err != nil {
-			t.Fatal(err)
-		}
+		provider := newProvider(res, reader, nil)
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if exporter.active.Load() != 1 {
@@ -189,7 +183,7 @@ func TestPeriodicReaderShutdownCancelsInflight(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		if err := r.Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		if err := provider.Shutdown(ctx); !errors.Is(err, context.Canceled) {
 			t.Fatalf("ошибка завершения: %v", err)
 		}
 		if !exporter.closed.Load() || exporter.active.Load() != 0 || exporter.exports.Load() != 1 {
@@ -232,11 +226,7 @@ func TestPipelineShutdownInflight(t *testing.T) {
 		)
 		cleanupReader(t, reader)
 		res := resource.Environment()
-		r, err := recorderWithReader(res, reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := &Pipeline{Recorder: r}
+		p := &Pipeline{provider: newProvider(res, reader, nil)}
 		time.Sleep(time.Second)
 		synctest.Wait()
 		if exporter.exports.Load() != 1 || exporter.active.Load() != 1 {
