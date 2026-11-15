@@ -7,7 +7,7 @@
 Compose передаёт его сервису `user-login-metrics` через `env_file`.
 При прямом запуске Go-бинарник файл не читает: переменные должны быть в окружении процесса.
 
-Версия Go указана в [go.mod](../module/go.mod); образ сборки в
+Версия Go указана в [go.mod](../backend/go.mod); образ сборки в
 [Dockerfile сервиса](../docker/metrics/Dockerfile) должен соответствовать ей.
 Для линтера требуется golangci-lint v2, для образа — Docker с доступным daemon.
 Проверка с race detector требует поддерживаемой Go платформы и C-компилятора.
@@ -27,25 +27,24 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Определения поддерживаются в [Makefile](../Makefile):
 
 ```bash
-make build             # bin/user-login
+make build-user-login  # bin/user-login-server
 make test              # тесты поведения с покрытием и race detector
-make vet               # стандартный статический анализ
 make lint              # включая архитектурные импорты
-make fmt               # форматирует Go-код, исправляет импорты, переносит строки длиннее 120 колонок
-make image-user-login   # образ metrics-user-login:local
+make lint-fix          # golines/goimports, затем автоисправления golangci-lint
 ```
 
-`make build`, `make test`, `make vet` и `make lint` не исправляют исходники;
-`make fmt` изменяет форматирование и импорты.
+`make build-user-login`, `make test` и `make lint` не исправляют исходники;
+`make lint-fix` изменяет Go-файлы во всём `backend/`, включая форматирование,
+импорты и доступные линтеру автоисправления. Перед проверками запускайте `make lint-fix`.
 
 Сборка без Make:
 
 ```bash
-go build -o bin/user-login ./module/user-login/cmd
-docker build -f module/user-login/Dockerfile -t metrics-user-login:local .
+go -C backend build -o ../bin/user-login-server ./cmd/user-login-httpserver
+docker build -f docker/metrics/Dockerfile -t metrics-user-login:local .
 ```
 
-Состояние и поведение запуска описаны в [README модуля](../module/user-login/README.md).
+Состояние и поведение запуска описаны в [README модуля](../backend/user-login/README.md).
 Успешная сборка не означает запуск сервера или работу экспорта.
 HTTP-контракт проверяется через `httptest`; обычный набор тестов также проверяет lifecycle
 на `127.0.0.1:0` без внешних зависимостей. OTLP/HTTP-тесты используют локальный `httptest`,
@@ -85,57 +84,61 @@ pkgsite -http=127.0.0.1:6060 .
 ```
 
 Из корня проекта команда запускает сервер документации. Пакет сервиса доступен
-по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/module/user-login>.
+по адресу <http://localhost:6060/github.com/vendelev/sre-metrics/backend/user-login>.
 При запуске в WSL адрес можно открыть в браузере Windows; остановка — Ctrl+C.
 
 Для ручной проверки запустите бинарник по инструкции сервиса.
 
 Endpoint, HTTP timeout, TLS и период экспорта задаются стандартными `OTEL_*`;
 готовый пример — в [.env.example](../.env.example), пояснения — в
-[README user-login](../module/user-login/README.md#настройки).
+[README user-login](../backend/user-login/README.md#настройки).
 Нода и окружение задаются через `OTEL_RESOURCE_ATTRIBUTES`.
-Длительности OTEL задаются целыми миллисекундами, длительности `USER_LOGIN_*` — с единицами.
+Длительности OTEL задаются целыми миллисекундами, длительности `USER_LOGIN_*`
+и `CORE_HTTP_*` — с единицами.
 
 В другом терминале отправьте синтетическое событие с текущим UTC-временем.
 Пример для GNU date:
 
 ```bash
 occurred_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
-curl --max-time 3 -i http://127.0.0.1:8080/events \
+curl --max-time 3 -i http://127.0.0.1:8080/metrics/b/user-login/events \
   -H 'Content-Type: application/json' \
   --data-binary "{\"event_id\":\"019aabcd-0000-7000-8000-000000000001\",\"scenario_id\":\"019aabcd-0000-7000-8000-000000000100\",\"occurred_at\":\"$occurred_at\",\"source\":\"mis\",\"type\":\"login_started\"}"
 ```
 
-Ожидается 204 без тела. Получатель OTLP должен быть настроен отдельно; его недоступность
+Ожидается 202 без тела: событие принято в очередь, обработка ещё не подтверждена.
+При полной очереди ожидается 503 с кодом overloaded.
+Получатель OTLP должен быть настроен отдельно; его недоступность
 не меняет HTTP-ответ, но приводит к диагностике экспорта. Затем остановите процесс Ctrl+C:
 при успешном завершении
 появляется сообщение о штатной остановке и процесс возвращает код 0.
-Это проверяет приём, а не OTLP-доставку. Для нового синтетического события меняйте event_id;
-повтор использованного ID с другим временем является конфликтом. Ошибка последнего
+Это проверяет приём, а не обработку или OTLP-доставку. Для нового синтетического события
+меняйте event_id; повтор использованного ID с другим временем конфликтует при обработке,
+но не меняет ответ 202. Ошибка последнего
 экспорта означает неуспешную остановку; исправный HTTP-приём сам по себе не гарантирует код 0.
 
 При контейнерной проверке отправляйте тот же запрос из вспомогательного контейнера
 в сети сервиса, например `docker run --rm --network metrics-local curlimages/curl ...`
-с URL `http://user-login:8080/events`. Порт на хост не публикуется; параметры сети
+с URL `http://user-login:8080/metrics/b/user-login/events`. Порт на хост не публикуется; параметры сети
 и остановки приведены в README сервиса. Для повторяемой проверки фиксируйте тег
 или digest вспомогательного образа. После проверки удалите только созданные тестовые ресурсы.
 
 Готовая Compose-конфигурация, DNS-имена сервисов, подключение правил Prometheus
 и дашбордов описаны в [инструкции локального стенда](../docker/otel-collector/README.md).
-В этом стенде адрес API — `http://user-login-metrics:8080/events`, сеть отправителей — `sptr_all`.
+В этом стенде адрес API — `http://user-login-metrics:8080/metrics/b/user-login/events`, сеть отправителей — `sptr_all`.
 Пример выше с `user-login` и `metrics-local` относится к отдельному ручному запуску контейнера.
 
 ## Зависимости и организация
 
 Версии Go-зависимостей и их контрольные суммы находятся в
-[`../module/go.mod`](../module/go.mod) и [`go.sum`](../module/go.sum). Путь Go-модуля
+[`../backend/go.mod`](../backend/go.mod) и [`go.sum`](../backend/go.sum). Путь Go-модуля
 `github.com/vendelev/sre-metrics` соответствует адресу репозитория. При переименовании
-обновляются `../module/go.mod`, Go-импорты и пути в [.golangci.yml](../module/.golangci.yml).
+обновляются `../backend/go.mod`, Go-импорты и пути в [.golangci.yml](../backend/.golangci.yml).
 
 При добавлении сервиса следуйте
 [правилам его размещения и изоляции](../.agents/rules/Architecture.md#статус-и-границы-сервисов).
 Дополните каталог модулей в корневом README, команды сборки в Makefile
-и правила импортов в `../module/.golangci.yml`.
+и правила импортов в `../backend/.golangci.yml`.
 
 Правила [архитектуры](../.agents/rules/Architecture.md) и
 [тестирования](../.agents/rules/Testing.md) определяют границы и требования к проверкам.

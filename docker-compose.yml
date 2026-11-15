@@ -13,7 +13,7 @@ services:
             - .env
         stop_grace_period: 15s
         depends_on:
-            otel-collector:
+            metrics-otel-collector:
                 condition: service_started
         mem_limit: 64m
         cpus: 0.25
@@ -27,12 +27,14 @@ services:
             options:
                 max-file: "2"
                 max-size: 5m
+        volumes:
+            - user-login-metrics:/mnt/metrics
         networks:
             - all
             - default
 
-    otel-collector:
-        image: gitlab.dwteam.ru:5050/dwteam/docker-images/otel-collector:0.147.0_2026.03.19
+    metrics-otel-collector:
+        image: otel/opentelemetry-collector-contrib:0.165.0
         container_name: metrics-otel-collector
         restart: unless-stopped
         labels:
@@ -76,3 +78,11 @@ networks:
     all:
         name: sptr_all
         external: true
+
+volumes:
+    user-login-metrics:
+        driver: local
+        driver_opts:
+            type: tmpfs
+            device: tmpfs
+            o: size=268435456,mode=0777

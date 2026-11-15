@@ -1,0 +1,208 @@
+version: "2"
+
+run:
+    relative-path-mode: gomod
+
+linters:
+    default: standard
+    enable:
+        - depguard
+        - errcheck
+        - govet
+        - ineffassign
+        - staticcheck
+        - unused
+        - goconst
+        - unconvert
+        - gocritic
+        - gocyclo
+        - nakedret
+        - gochecknoinits
+        - sloglint
+        - errorlint
+        - nilerr
+        - bodyclose
+    exclusions:
+        rules:
+            -   path: '_test\.go$'
+                linters:
+                    - goconst
+                    - gocyclo
+    settings:
+        staticcheck:
+            checks:
+                - all
+        govet:
+            enable:
+                - appends
+                - asmdecl
+                - assign
+                - atomic
+                - bools
+                - buildtag
+                - cgocall
+                - composites
+                - copylocks
+                - defers
+                - directive
+                - errorsas
+                - framepointer
+                - hostport
+                - httpresponse
+                - ifaceassert
+                - inline
+                - lostcancel
+                - nilfunc
+                - printf
+                - shift
+                - sigchanyzer
+                - slog
+                - stdmethods
+                - stdversion
+                - stringintconv
+                - structtag
+                - testinggoroutine
+                - tests
+                - timeformat
+                - unmarshal
+                - unreachable
+                - unsafeptr
+                - unusedresult
+                - waitgroup
+                - shadow
+                - nilness
+                - unusedwrite
+        gocritic:
+            enabled-checks:
+                - hugeParam
+        depguard:
+            rules:
+                app-isolation:
+                    files:
+                        - "${base-path}/cmd/*.go"
+                        - "${base-path}/cmd/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты pkg."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
+                        - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/"
+                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
+                        - "github.com/vendelev/sre-metrics/core/config$"
+                        - "github.com/vendelev/sre-metrics/core/oteltest$"
+                        - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
+                        - "github.com/vendelev/sre-metrics/user-login/config$"
+                        - "github.com/vendelev/sre-metrics/pkg/"
+                    list-mode: lax
+                user-login-bootstrap-isolation:
+                    files:
+                        - "${base-path}/user-login/bootstrap/*.go"
+                        - "${base-path}/user-login/bootstrap/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "bootstrap модуля не зависит от core и cmd: приложение соединяет модули через публичные API."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/user-login$"
+                        - "github.com/vendelev/sre-metrics/user-login/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
+                    list-mode: lax
+                user-login-internal-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/*.go"
+                        - "${base-path}/user-login/internal/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/core"
+                          desc: "внутренние слои user-login не зависят от core: публичную сборку использует только корень модуля."
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты pkg."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/user-login$"
+                        - "github.com/vendelev/sre-metrics/user-login/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
+                    list-mode: lax
+                core-isolation:
+                    files:
+                        - "${base-path}/core/*.go"
+                        - "${base-path}/core/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/"
+                          desc: "core не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/core$"
+                        - "github.com/vendelev/sre-metrics/core/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
+                    list-mode: lax
+                domain:
+                    files:
+                        - "${base-path}/user-login/internal/domain/*.go"
+                        - "${base-path}/user-login/internal/domain/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                    deny:
+                        - pkg: "net/http"
+                          desc: "HTTP относится к presentation, а не к domain."
+                application:
+                    files:
+                        - "${base-path}/user-login/internal/application/*.go"
+                        - "${base-path}/user-login/internal/application/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/"
+                    deny:
+                        - pkg: "net/http"
+                          desc: "Код application работает с событиями, а не с HTTP-запросами."
+                presentation:
+                    files:
+                        - "${base-path}/user-login/internal/presentation/*.go"
+                        - "${base-path}/user-login/internal/presentation/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/go-chi/**"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/user-login/config$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/infrastructure$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/infrastructure/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/presentation$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/presentation/"
+                infrastructure-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/infrastructure/*.go"
+                        - "${base-path}/user-login/internal/infrastructure/**/*.go"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/user-login/internal/presentation"
+                          desc: "Infrastructure не зависит от Presentation; обратное направление разрешено матрицей."
+                worker-isolation:
+                    files:
+                        - "${base-path}/user-login/internal/infrastructure/worker/*.go"
+                        - "!${base-path}/user-login/internal/infrastructure/worker/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase$"
+                        - "github.com/vendelev/sre-metrics/user-login/internal/application/usecase/"
+                    deny:
+                        - pkg: "github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
+                          desc: "worker получает готовый канал и операцию закрытия приёма, а не очередь."

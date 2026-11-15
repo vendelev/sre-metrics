@@ -1,0 +1,171 @@
+package usecase
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/pkg/clock"
+	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
+	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
+	dScenario "github.com/vendelev/sre-metrics/user-login/internal/domain/scenario"
+)
+
+// LoginObserver координирует наблюдение за сценариями входа.
+// Все операции одного экземпляра должны использовать одно хранилище процесса.
+// Process и Maintain вызывает только один владелец последовательно, без перекрытия.
+type LoginObserver struct {
+	store dContract.Store
+	clock clock.Clock
+}
+
+// NewLoginObserver принимает явно заданные хранилище и часы.
+// Зависимости должны быть ненулевыми, в том числе не содержать типизированный nil.
+func NewLoginObserver(store dContract.Store, clock clock.Clock) (*LoginObserver, error) {
+	if store == nil || clock == nil {
+		return nil, fmt.Errorf("создание наблюдателя: %w: отсутствует хранилище или часы", dError.ErrInternal)
+	}
+	return &LoginObserver{store: store, clock: clock}, nil
+}
+
+// Maintain закрывает истёкшие ожидания и удаляет записи с истёкшим retention.
+// Не запускает планировщик; повторный вызов безопасен и не увеличивает счётчики повторно.
+func (o *LoginObserver) Maintain() error {
+	now := o.clock.Now()
+	if err := o.store.RemoveRetained(now); err != nil {
+		return internalError("обслуживание состояния", err)
+	}
+	for scenario := range o.store.Scenarios() {
+		if !scenario.CloseIfExpired(now) {
+			continue
+		}
+		if err := o.store.Commit(scenario, nil, scenario.TakeMeasurements()); err != nil {
+			return internalError("обслуживание состояния", err)
+		}
+	}
+	return nil
+}
+
+// ProcessResult содержит только независимые данные безопасной диагностики.
+// При непустом NegativeDurationScenarioID вызывающий код должен записать диагностический
+// лог с этим ID без полного события после завершения Process.
+type ProcessResult struct {
+	NegativeDurationScenarioID uuid.UUID
+}
+
+func internalError(operation string, err error) error {
+	return fmt.Errorf("%s: %w: %w", operation, dError.ErrInternal, err)
+}
+
+// Process обрабатывает предметное событие после транспортной валидации и проверки возраста при приёме.
+// Возраст повторно не проверяется: ожидание в очереди не отменяет допустимость приёма.
+// Событие и его AuthMode нельзя изменять до возврата; после возврата они не удерживаются.
+func (o *LoginObserver) Process(event *dEvent.Request) (ProcessResult, error) {
+	result, err := processEvent(o.store, event, o.clock.Now())
+	return result, operationError("обработка события", err)
+}
+
+func operationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, expected := range []error{
+		dError.ErrInvalidEvent, dError.ErrConflict, dScenario.ErrScenarioExpired, dError.ErrCapacityExceeded,
+	} {
+		if errors.Is(err, expected) {
+			return fmt.Errorf("%s: %w", operation, err)
+		}
+	}
+	return internalError(operation, err)
+}
+
+func equalEvents(a *dEvent.Request, b *dEvent.Request) bool {
+	sameIDs := a.EventID == b.EventID && a.ScenarioID == b.ScenarioID
+	sameFact := a.Source == b.Source && a.Type == b.Type && a.OccurredAt.Equal(b.OccurredAt)
+	if !sameIDs || !sameFact {
+		return false
+	}
+	if a.AuthMode == nil || b.AuthMode == nil {
+		return a.AuthMode == nil && b.AuthMode == nil
+	}
+	return *a.AuthMode == *b.AuthMode
+}
+
+func processEvent(state dContract.Store, event *dEvent.Request, now time.Time) (ProcessResult, error) {
+	if err := state.RemoveRetained(now); err != nil {
+		return ProcessResult{}, err
+	}
+	if stored, ok := state.FindEvent(event.EventID); ok {
+		if equalEvents(&stored, event) {
+			return ProcessResult{}, nil
+		}
+		return ProcessResult{}, dError.ErrConflict
+	}
+	loginScenario, exists := state.FindScenario(event.ScenarioID)
+	if !exists {
+		loginScenario = dScenario.New(event.ScenarioID)
+	}
+	checkErr := checkFact(loginScenario, event, now)
+	if errors.Is(checkErr, dError.ErrConflict) {
+		return ProcessResult{}, checkErr
+	}
+	if exists && loginScenario.CloseIfExpired(now) {
+		if err := state.Commit(loginScenario, nil, loginScenario.TakeMeasurements()); err != nil {
+			return ProcessResult{}, err
+		}
+	}
+	if checkErr != nil {
+		return ProcessResult{}, checkErr
+	}
+	if err := state.CheckCapacity(event.ScenarioID); err != nil {
+		return ProcessResult{}, err
+	}
+	hadNegativeDuration := loginScenario.HasNegativeDuration()
+	if err := acceptFact(loginScenario, event, now); err != nil {
+		return ProcessResult{}, internalError("приём проверенного факта", err)
+	}
+	measurements := loginScenario.TakeMeasurements()
+	if err := state.Commit(loginScenario, event, measurements); err != nil {
+		return ProcessResult{}, err
+	}
+	if !hadNegativeDuration && loginScenario.HasNegativeDuration() {
+		return ProcessResult{NegativeDurationScenarioID: loginScenario.ID()}, nil
+	}
+	return ProcessResult{}, nil
+}
+
+func checkFact(loginScenario *dScenario.Scenario, event *dEvent.Request, now time.Time) error {
+	switch event.Type {
+	case dEvent.LoginStarted:
+		return loginScenario.CheckStart(event.OccurredAt, now)
+	case dEvent.LoginModeDetermined:
+		return loginScenario.CheckMode(*event.AuthMode, now)
+	case dEvent.LoginSucceeded:
+		return loginScenario.CheckOutcome(dScenario.OutcomeSuccess, now)
+	case dEvent.LoginFailed:
+		return loginScenario.CheckOutcome(dScenario.OutcomeTechnicalError, now)
+	case dEvent.LoginRejected:
+		return loginScenario.CheckOutcome(dScenario.OutcomeRejected, now)
+	default:
+		return dError.ErrInternal
+	}
+}
+
+func acceptFact(scenario *dScenario.Scenario, event *dEvent.Request, now time.Time) error {
+	switch event.Type {
+	case dEvent.LoginStarted:
+		return scenario.Start(event.OccurredAt, now)
+	case dEvent.LoginModeDetermined:
+		return scenario.DetermineMode(*event.AuthMode, now)
+	case dEvent.LoginSucceeded:
+		return scenario.Succeed(event.OccurredAt, now)
+	case dEvent.LoginFailed:
+		return scenario.Fail(now)
+	case dEvent.LoginRejected:
+		return scenario.Reject(now)
+	default:
+		return dError.ErrInternal
+	}
+}

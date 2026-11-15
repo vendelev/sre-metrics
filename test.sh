@@ -8,7 +8,7 @@ fi
 set -euo pipefail
 
 network=${DOCKER_NETWORK:-sptr_all}
-endpoint=${EVENTS_URL:-http://user-login-metrics:8080/events}
+endpoint=${EVENTS_URL:-http://user-login-metrics:8080/metrics/b/user-login/events}
 curl_image=${CURL_IMAGE:-curlimages/curl:8.12.1}
 check_limits=false
 passed=0

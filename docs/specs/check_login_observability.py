@@ -68,7 +68,7 @@ def main():
         )
 
     event_validator = validator("#/components/schemas/LoginEvent")
-    operation = api["paths"]["/events"]["post"]
+    operation = api["paths"]["/metrics/b/user-login/events"]["post"]
     examples = operation["requestBody"]["content"]["application/json"]["examples"]
     accepted = []
     for example in examples.values():
@@ -179,11 +179,10 @@ def main():
     error_count = 0
     expected_codes = {
         "400": "invalid_event", "405": "method_not_allowed",
-        "409": "event_conflict", "410": "scenario_expired",
         "415": "unsupported_media_type",
-        "500": "internal_error", "503": "capacity_exceeded",
+        "500": "internal_error", "503": "overloaded",
     }
-    assert "content" not in operation["responses"]["204"]
+    assert "content" not in operation["responses"]["202"]
     for status, code in expected_codes.items():
         response_pointer = operation["responses"][status]["$ref"]
         response = api
@@ -200,7 +199,7 @@ def main():
         error_count += 1
     allow = api["components"]["responses"]["MethodNotAllowed"]["headers"]["Allow"]
     assert allow["required"] and allow["schema"]["const"] == "POST"
-    print(f"PASS {error_count} error response schemas, 204 and Allow header")
+    print(f"PASS {error_count} error response schemas, 202 and Allow header")
 
     rules = load_yaml("login-observability.prometheus.rules.yml")
     seen = set()
