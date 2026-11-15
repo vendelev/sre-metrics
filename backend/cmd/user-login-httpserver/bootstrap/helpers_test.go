@@ -12,7 +12,7 @@ import (
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
 	"github.com/vendelev/sre-metrics/core/config"
 	"github.com/vendelev/sre-metrics/core/oteltest"
-	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
 
@@ -83,13 +83,13 @@ func actualConfig(t *testing.T, r *oteltest.Receiver) (*userloginconfig.Config, 
 
 // testApp собирает настоящую сборку приложения с проверенной конфигурацией.
 // Управляемые часы передаются как значение вызывающего кода: модуль собирает
-// их через публичный контракт Clock.
+// их через общий контракт clock.Clock.
 func testApp(
 	t *testing.T,
 	process appconfig.Config,
 	cfg *userloginconfig.Config,
 	settings config.HTTP,
-	c userlogin.Clock,
+	c clock.Clock,
 ) *App {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {

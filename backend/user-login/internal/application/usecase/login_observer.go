@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	dContract "github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
@@ -17,12 +18,12 @@ import (
 // Process и Maintain вызывает только один владелец последовательно, без перекрытия.
 type LoginObserver struct {
 	store dContract.Store
-	clock dContract.Clock
+	clock clock.Clock
 }
 
 // NewLoginObserver принимает явно заданные хранилище и часы.
 // Зависимости должны быть ненулевыми, в том числе не содержать типизированный nil.
-func NewLoginObserver(store dContract.Store, clock dContract.Clock) (*LoginObserver, error) {
+func NewLoginObserver(store dContract.Store, clock clock.Clock) (*LoginObserver, error) {
 	if store == nil || clock == nil {
 		return nil, fmt.Errorf("создание наблюдателя: %w: отсутствует хранилище или часы", dError.ErrInternal)
 	}

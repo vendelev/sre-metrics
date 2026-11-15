@@ -6,7 +6,8 @@ import (
 
 	"go.uber.org/dig"
 
-	"github.com/vendelev/sre-metrics/platform/web"
+	"github.com/vendelev/sre-metrics/pkg/clock"
+	"github.com/vendelev/sre-metrics/pkg/httproute"
 	"github.com/vendelev/sre-metrics/user-login/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
@@ -71,7 +72,7 @@ func NewModule(
 	w *worker.Worker,
 	q *queue.EventQueue,
 	logger *slog.Logger,
-	clock Clock,
+	clock clock.Clock,
 ) (*Module, error) {
 	handler, err := routeOf(q, logger, clock)
 	if err != nil {
@@ -88,8 +89,8 @@ func NewModule(
 
 // routesOf публикует маршруты модуля для корневой сборки приложения.
 // Приложение выбирает внешний префикс и не знает внутренние пакеты модуля.
-func routesOf(m *Module) []web.Route {
-	return []web.Route{{
+func routesOf(m *Module) []httproute.Route {
+	return []httproute.Route{{
 		Prefix:  "/",
 		Handler: m.Handler(),
 	}}

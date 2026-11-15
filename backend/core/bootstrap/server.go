@@ -8,6 +8,7 @@ import (
 
 	"github.com/vendelev/sre-metrics/core/config"
 	"github.com/vendelev/sre-metrics/core/internal/infrastructure/httpserver"
+	"github.com/vendelev/sre-metrics/pkg/task"
 )
 
 // Server владеет HTTP-сервером и его фоновым заданием Serve одного запуска.
@@ -15,7 +16,7 @@ import (
 // запуска, задачу Serve — StartServe после регистрации всех маршрутов.
 type Server struct {
 	server *httpserver.Server
-	serve  *Task
+	serve  *task.Task
 	failed chan struct{}
 }
 
@@ -50,11 +51,10 @@ func (s *Server) StartServe(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.serve = &Task{done: make(chan struct{})}
+	s.serve = task.New()
 	go func() {
-		s.serve.err = s.server.Serve()
-		close(s.serve.done)
-		if s.serve.err != nil {
+		s.serve.Complete(s.server.Serve())
+		if s.serve.Err() != nil {
 			select {
 			case s.failed <- struct{}{}:
 			default:
@@ -66,7 +66,7 @@ func (s *Server) StartServe(ctx context.Context) error {
 
 // ServeTask возвращает задание Serve для ожидания завершения и чтения
 // результата; до StartServe возвращает nil.
-func (s *Server) ServeTask() *Task {
+func (s *Server) ServeTask() *task.Task {
 	return s.serve
 }
 

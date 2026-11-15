@@ -83,7 +83,7 @@ linters:
                         - "${base-path}/cmd/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты platform."
+                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты pkg."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
@@ -93,7 +93,7 @@ linters:
                         - "github.com/vendelev/sre-metrics/core/oteltest$"
                         - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
-                        - "github.com/vendelev/sre-metrics/platform/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 user-login-bootstrap-isolation:
                     files:
@@ -106,7 +106,7 @@ linters:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
                         - "github.com/vendelev/sre-metrics/user-login/"
-                        - "github.com/vendelev/sre-metrics/platform/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 user-login-internal-isolation:
                     files:
@@ -116,12 +116,12 @@ linters:
                         - pkg: "github.com/vendelev/sre-metrics/core"
                           desc: "внутренние слои user-login не зависят от core: публичную сборку использует только корень модуля."
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты platform."
+                          desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты pkg."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
                         - "github.com/vendelev/sre-metrics/user-login/"
-                        - "github.com/vendelev/sre-metrics/platform/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 core-isolation:
                     files:
@@ -129,11 +129,12 @@ linters:
                         - "${base-path}/core/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "core не импортирует функциональные модули и пакеты вне core."
+                          desc: "core не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/core$"
                         - "github.com/vendelev/sre-metrics/core/"
+                        - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 domain:
                     files:
@@ -156,6 +157,7 @@ linters:
                     allow:
                         - "$gostd"
                         - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
                         - "github.com/vendelev/sre-metrics/user-login/internal/application$"
@@ -172,6 +174,7 @@ linters:
                         - "$gostd"
                         - "github.com/google/uuid$"
                         - "github.com/go-chi/**"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain/"

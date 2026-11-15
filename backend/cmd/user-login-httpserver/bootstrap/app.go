@@ -14,6 +14,7 @@ import (
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
 	"github.com/vendelev/sre-metrics/core/bootstrap"
 	coreconfig "github.com/vendelev/sre-metrics/core/config"
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
@@ -35,7 +36,7 @@ func Run(ctx context.Context) error {
 		return err
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("service", "user-login")
-	app, err := newApp(process, &moduleCfg, settings, logger, userlogin.RealTime{})
+	app, err := newApp(process, &moduleCfg, settings, logger, clock.RealTime{})
 	if err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func newApp(
 	moduleCfg *userloginconfig.Config,
 	settings coreconfig.HTTP,
 	logger *slog.Logger,
-	clock userlogin.Clock,
+	domainClock clock.Clock,
 ) (*App, error) {
 	container := dig.New()
 	if err := errors.Join(
@@ -76,7 +77,7 @@ func newApp(
 		container.Provide(func() *userloginconfig.Config { return moduleCfg }),
 		container.Provide(func() coreconfig.HTTP { return settings }),
 		container.Provide(func() *slog.Logger { return logger }),
-		container.Provide(func() userlogin.Clock { return clock }),
+		container.Provide(func() clock.Clock { return domainClock }),
 		// Технические компоненты core.
 		bootstrap.Provide(container),
 		container.Provide(func() bootstrap.Views {

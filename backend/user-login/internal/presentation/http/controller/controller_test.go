@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
@@ -116,7 +116,7 @@ func TestNewController(t *testing.T) {
 		name   string
 		accept func(*event.Request) error
 		logger *slog.Logger
-		clock  contract.Clock
+		clock  clock.Clock
 	}{
 		{"нет операции", nil, logger, newTestClock()},
 		{"нет логгера", accept, nil, newTestClock()},

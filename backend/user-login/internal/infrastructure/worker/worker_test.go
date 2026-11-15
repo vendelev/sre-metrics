@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
@@ -110,7 +111,7 @@ func ingestEvent(id int, kind dEvent.Type, at time.Time) *dEvent.Request {
 func workerFixture(
 	t *testing.T,
 	limits memory.Limits,
-	c contract.Clock,
+	c clock.Clock,
 ) (*Worker, *queue.EventQueue, *memory.Store, *otel.Recorder, *bytes.Buffer) {
 	t.Helper()
 	recorder := oteltest.New(t)

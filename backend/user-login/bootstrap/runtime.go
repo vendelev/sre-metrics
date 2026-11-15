@@ -7,30 +7,11 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/vendelev/sre-metrics/pkg/task"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/worker"
 )
-
-// Task публикует результат фоновой задачи модуля закрытием Done. После
-// истечения бюджета владелец не ждёт произвольную Go-функцию и не читает
-// ещё не готовый результат. Структура согласована с публичным Task core,
-// но не связана с ним: модуль не зависит от core.
-type Task struct {
-	done chan struct{}
-	err  error // Читается только после закрытия done.
-}
-
-// Done закрывается при завершении задачи; повторных закрытий нет.
-func (t *Task) Done() <-chan struct{} {
-	return t.done
-}
-
-// Err возвращает результат завершённой задачи. Вызывать только после
-// закрытия Done, включая конкурентное чтение: до него значение не готово.
-func (t *Task) Err() error {
-	return t.err
-}
 
 // Module — публичный фасад модуля: handler и фазы запуска и остановки
 // собственных фоновых задач. HTTP-ресурсы и OTel-pipeline принадлежат core;
@@ -42,7 +23,7 @@ type Module struct {
 	queue    *queue.EventQueue
 	handler  http.Handler
 
-	workerTask *Task
+	workerTask *task.Task
 	failed     chan struct{}
 }
 
@@ -70,11 +51,10 @@ func (m *Module) StartWorker(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m.workerTask = &Task{done: make(chan struct{})}
+	m.workerTask = task.New()
 	go func() {
-		m.workerTask.err = m.worker.Run()
-		close(m.workerTask.done)
-		if m.workerTask.err != nil {
+		m.workerTask.Complete(m.worker.Run())
+		if m.workerTask.Err() != nil {
 			select {
 			case m.failed <- struct{}{}:
 			default:
@@ -86,7 +66,7 @@ func (m *Module) StartWorker(ctx context.Context) error {
 
 // WorkerTask возвращает задачу воркера для ожидания завершения и чтения
 // результата; до StartWorker возвращает nil.
-func (m *Module) WorkerTask() *Task {
+func (m *Module) WorkerTask() *task.Task {
 	return m.workerTask
 }
 
@@ -119,7 +99,7 @@ func (m *Module) Drain(ctx context.Context) error {
 		return nil
 	}
 	select {
-	case <-m.workerTask.done:
+	case <-m.workerTask.Done():
 	case <-ctx.Done():
 		return fmt.Errorf("исчерпан бюджет завершения обработки: %w", ctx.Err())
 	}

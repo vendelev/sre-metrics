@@ -13,10 +13,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vendelev/sre-metrics/pkg/clock"
+	"github.com/vendelev/sre-metrics/pkg/task"
 	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
-	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/memory"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
@@ -112,7 +113,7 @@ func waitResult(t *testing.T, done <-chan struct{}) {
 func mustModule(
 	t *testing.T,
 	store contract.Store,
-	domainClock contract.Clock,
+	domainClock clock.Clock,
 	interval time.Duration,
 ) *Module {
 	t.Helper()
@@ -243,7 +244,7 @@ func TestMaintenanceFailurePublishesTaskError(t *testing.T) {
 func TestDrainUsesGivenBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := mustModule(t, nil, nil, time.Second)
-		m.workerTask = &Task{done: make(chan struct{})}
+		m.workerTask = task.New()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		started := time.Now()
@@ -258,7 +259,7 @@ func TestDrainUsesGivenBudget(t *testing.T) {
 		if err := m.Drain(ctx); !errors.Is(err, context.DeadlineExceeded) || time.Now() != before {
 			t.Fatalf("повторный drain получил новый бюджет: %v", err)
 		}
-		close(m.workerTask.done)
+		m.workerTask.Complete(nil)
 	})
 }
 
@@ -302,8 +303,8 @@ func TestModuleDrainDeadlineLeavesRestQueue(t *testing.T) {
 // Завершённая задача не блокирует drain: ожидание завершается без ошибки.
 func TestDrainReturnsAfterWorkerTask(t *testing.T) {
 	m := mustModule(t, nil, nil, time.Second)
-	m.workerTask = &Task{done: make(chan struct{})}
-	close(m.workerTask.done)
+	m.workerTask = task.New()
+	m.workerTask.Complete(nil)
 	if err := m.Drain(t.Context()); err != nil {
 		t.Fatalf("drain завершённой задачи вернул ошибку: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
 	"github.com/vendelev/sre-metrics/user-login/internal/presentation/http/controller"
 )
@@ -16,7 +17,7 @@ import (
 func routeOf(
 	q *queue.EventQueue,
 	logger *slog.Logger,
-	clock Clock,
+	clock clock.Clock,
 ) (http.Handler, error) {
 	eventsController, err := controller.New(q.Enqueue, logger.With("component", "http"), clock)
 	if err != nil {

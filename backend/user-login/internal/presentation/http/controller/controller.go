@@ -7,7 +7,7 @@ import (
 	"mime"
 	"net/http"
 
-	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
+	"github.com/vendelev/sre-metrics/pkg/clock"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 )
@@ -19,7 +19,7 @@ import (
 type Controller struct {
 	enqueue func(*dEvent.Request) error
 	logger  *slog.Logger
-	clock   contract.Clock
+	clock   clock.Clock
 }
 
 // New принимает готовые операцию приёма, логгер и часы. Зависимости должны
@@ -27,7 +27,7 @@ type Controller struct {
 func New(
 	enqueue func(*dEvent.Request) error,
 	logger *slog.Logger,
-	clock contract.Clock,
+	clock clock.Clock,
 ) (*Controller, error) {
 	if enqueue == nil {
 		return nil, errors.New("не задана операция приёма событий")

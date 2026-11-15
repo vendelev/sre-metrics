@@ -1,4 +1,4 @@
-package bootstrap
+package httproute_test
 
 import (
 	"fmt"
@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vendelev/sre-metrics/platform/web"
+	"github.com/vendelev/sre-metrics/pkg/httproute"
 )
 
-func TestRootHandlerMountsModuleRoutes(t *testing.T) {
+func TestNewRouterMountsModuleRoutes(t *testing.T) {
 	t.Parallel()
-	routes := []web.Route{
+	routes := []httproute.Route{
 		{
 			Prefix: "/patient",
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +26,7 @@ func TestRootHandlerMountsModuleRoutes(t *testing.T) {
 			}),
 		},
 	}
-	handler, err := rootHandler(rootHandlerIn{Routes: routes})
+	handler, err := httproute.NewRouter(routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,27 +46,27 @@ func TestRootHandlerMountsModuleRoutes(t *testing.T) {
 	}
 }
 
-func TestRootHandlerRejectsAmbiguousRoutes(t *testing.T) {
+func TestNewRouterRejectsAmbiguousRoutes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
-		routes []web.Route
+		routes []httproute.Route
 		want   string
 	}{
 		{"нет маршрутов", nil, "не заданы маршруты"},
 		{
 			"пустой префикс",
-			[]web.Route{{Prefix: "", Handler: http.NotFoundHandler()}},
+			[]httproute.Route{{Prefix: "", Handler: http.NotFoundHandler()}},
 			"должен начинаться со слэша",
 		},
 		{
 			"нет обработчика",
-			[]web.Route{{Prefix: "/login", Handler: nil}},
+			[]httproute.Route{{Prefix: "/login", Handler: nil}},
 			"не задан обработчик",
 		},
 		{
 			"повтор префикса",
-			[]web.Route{
+			[]httproute.Route{
 				{Prefix: "/login", Handler: http.NotFoundHandler()},
 				{Prefix: "/login", Handler: http.NotFoundHandler()},
 			},
@@ -74,7 +74,7 @@ func TestRootHandlerRejectsAmbiguousRoutes(t *testing.T) {
 		},
 		{
 			"вложенный префикс",
-			[]web.Route{
+			[]httproute.Route{
 				{Prefix: "/login/extra", Handler: http.NotFoundHandler()},
 				{Prefix: "/login", Handler: http.NotFoundHandler()},
 			},
@@ -82,7 +82,7 @@ func TestRootHandlerRejectsAmbiguousRoutes(t *testing.T) {
 		},
 		{
 			"корневой префикс перекрывает модуль",
-			[]web.Route{
+			[]httproute.Route{
 				{Prefix: "/login", Handler: http.NotFoundHandler()},
 				{Prefix: "/", Handler: http.NotFoundHandler()},
 			},
@@ -91,7 +91,7 @@ func TestRootHandlerRejectsAmbiguousRoutes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := rootHandler(rootHandlerIn{Routes: tc.routes})
+			_, err := httproute.NewRouter(tc.routes)
 			if err == nil {
 				t.Fatal("конфликтная маршрутизация принята")
 			}
