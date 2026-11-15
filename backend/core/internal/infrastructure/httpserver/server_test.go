@@ -167,7 +167,7 @@ func TestShutdownForceClosesHungRequests(t *testing.T) {
 	go func() {
 		client := &http.Client{Timeout: 2 * time.Second}
 		defer client.CloseIdleConnections()
-		response, err := client.Get("http://" + srv.Addr().String() + "/events")
+		response, err := client.Get("http://" + srv.Addr().String() + "/metrics/b/user-login/events")
 		if err == nil {
 			err = response.Body.Close()
 		}

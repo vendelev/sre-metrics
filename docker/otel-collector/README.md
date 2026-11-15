@@ -7,7 +7,7 @@
 
 ## Потоки данных
 
-- Метрики сценариев: HTTP-события на `user-login-metrics:8080/events` → SDK user-login → OTLP/HTTP
+- Метрики сценариев: HTTP-события на `user-login-metrics:8080/metrics/b/user-login/events` → SDK user-login → OTLP/HTTP
   `metrics-otel-collector:4318/v1/metrics` → Prometheus exporter `metrics-otel-collector:8889`
   → scrape Prometheus → recording rules → Grafana.
 - Копия метрик: основной Collector → `signoz-collector:4317` → ClickHouse SigNoz.
@@ -77,7 +77,7 @@ Compose передаёт сервису корневой `.env` через `env_
 10 секунд и бюджет остановки 10 секунд; Docker ждёт 15 секунд перед принудительным завершением.
 Экспорт использует стандартные `OTEL_*`; интервалы и timeout SDK в `.env` указаны в миллисекундах.
 Порты API событий, OTLP и хранилищ на хост не публикуются.
-Отправляйте события из доверенной сети на `http://user-login-metrics:8080/events`.
+Отправляйте события из доверенной сети на `http://user-login-metrics:8080/metrics/b/user-login/events`.
 Внутри сети используйте DNS-имена сервисов Compose (`otel-collector`, `user-login-metrics`),
 не привязывая клиентов к значениям `container_name`.
 API не имеет отдельной аутентификации: состав `sptr_all` является границей доверия.

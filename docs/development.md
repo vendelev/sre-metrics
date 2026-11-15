@@ -101,7 +101,7 @@ Endpoint, HTTP timeout, TLS и период экспорта задаются с
 
 ```bash
 occurred_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
-curl --max-time 3 -i http://127.0.0.1:8080/events \
+curl --max-time 3 -i http://127.0.0.1:8080/metrics/b/user-login/events \
   -H 'Content-Type: application/json' \
   --data-binary "{\"event_id\":\"019aabcd-0000-7000-8000-000000000001\",\"scenario_id\":\"019aabcd-0000-7000-8000-000000000100\",\"occurred_at\":\"$occurred_at\",\"source\":\"mis\",\"type\":\"login_started\"}"
 ```
@@ -119,13 +119,13 @@ curl --max-time 3 -i http://127.0.0.1:8080/events \
 
 При контейнерной проверке отправляйте тот же запрос из вспомогательного контейнера
 в сети сервиса, например `docker run --rm --network metrics-local curlimages/curl ...`
-с URL `http://user-login:8080/events`. Порт на хост не публикуется; параметры сети
+с URL `http://user-login:8080/metrics/b/user-login/events`. Порт на хост не публикуется; параметры сети
 и остановки приведены в README сервиса. Для повторяемой проверки фиксируйте тег
 или digest вспомогательного образа. После проверки удалите только созданные тестовые ресурсы.
 
 Готовая Compose-конфигурация, DNS-имена сервисов, подключение правил Prometheus
 и дашбордов описаны в [инструкции локального стенда](../docker/otel-collector/README.md).
-В этом стенде адрес API — `http://user-login-metrics:8080/events`, сеть отправителей — `sptr_all`.
+В этом стенде адрес API — `http://user-login-metrics:8080/metrics/b/user-login/events`, сеть отправителей — `sptr_all`.
 Пример выше с `user-login` и `metrics-local` относится к отдельному ручному запуску контейнера.
 
 ## Зависимости и организация

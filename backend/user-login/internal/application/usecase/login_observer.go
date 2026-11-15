@@ -63,9 +63,6 @@ func internalError(operation string, err error) error {
 // Возраст повторно не проверяется: ожидание в очереди не отменяет допустимость приёма.
 // Событие и его AuthMode нельзя изменять до возврата; после возврата они не удерживаются.
 func (o *LoginObserver) Process(event *dEvent.Request) (ProcessResult, error) {
-	if event == nil {
-		return ProcessResult{}, fmt.Errorf("отсутствует событие: %w", dError.ErrInvalidEvent)
-	}
 	result, err := processEvent(o.store, event, o.clock.Now())
 	return result, operationError("обработка события", err)
 }

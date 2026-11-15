@@ -1,4 +1,4 @@
-// Package controller разбирает и проверяет POST /events, передаёт событие
+// Package controller разбирает и проверяет POST /metrics/b/user-login/events, передаёт событие
 // операции приёма и формирует HTTP-ответ. Регистрацию маршрутов chi выполняет
 // bootstrap модуля. Предметные правила сценария остаются во внутренних слоях.
 package controller

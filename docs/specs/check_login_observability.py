@@ -68,7 +68,7 @@ def main():
         )
 
     event_validator = validator("#/components/schemas/LoginEvent")
-    operation = api["paths"]["/events"]["post"]
+    operation = api["paths"]["/metrics/b/user-login/events"]["post"]
     examples = operation["requestBody"]["content"]["application/json"]["examples"]
     accepted = []
     for example in examples.values():

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/vendelev/sre-metrics/pkg/clock"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
@@ -38,7 +37,7 @@ func newTestClock() *testClock {
 // fixture наблюдает передачу разобранных событий на рабочей границе accept.
 // Реальные очередь, обработка и SDK проверяются вместе в тестах сервиса и bootstrap.
 type fixture struct {
-	controller *controller.Controller
+	controller *controller.LoginEvent
 	accepted   []event.Request
 	logs       bytes.Buffer
 	calls      int
@@ -49,7 +48,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{clock: newTestClock()}
 	var err error
-	f.controller, err = controller.New(func(e *event.Request) error {
+	f.controller, err = controller.NewLoginEvent(func(e *event.Request) error {
 		f.calls++
 		f.accepted = append(f.accepted, e.Clone())
 		return nil
@@ -72,7 +71,7 @@ func eventBody(id uuid.UUID, kind, source, at, mode string) string {
 func startedBody() string { return eventBody(eventID, "login_started", "mis", wireTime, "") }
 
 func request(handler http.HandlerFunc, method, mediaType, body string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, "/events", strings.NewReader(body))
+	r := httptest.NewRequest(method, "/metrics/b/user-login/events", strings.NewReader(body))
 	if mediaType != "" {
 		r.Header.Set("Content-Type", mediaType)
 	}
@@ -123,7 +122,7 @@ func TestNewController(t *testing.T) {
 		{"нет часов", accept, logger, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := controller.New(tc.accept, tc.logger, tc.clock); err == nil {
+			if _, err := controller.NewLoginEvent(tc.accept, tc.logger, tc.clock); err == nil {
 				t.Fatal("невалидная зависимость принята")
 			}
 		})
@@ -137,7 +136,7 @@ func TestControllerClosedQueue(t *testing.T) {
 	q := queue.NewEventQueue(1)
 	q.Close()
 	var logs bytes.Buffer
-	c, err := controller.New(q.Enqueue, slog.New(slog.NewJSONHandler(&logs, nil)), newTestClock())
+	c, err := controller.NewLoginEvent(q.Enqueue, slog.New(slog.NewJSONHandler(&logs, nil)), newTestClock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +222,7 @@ func TestControllerLargeBody(t *testing.T) {
 			t.Run(fmt.Sprintf("байт=%d/неизвестная длина=%t", size, unknownLength), func(t *testing.T) {
 				f := newFixture(t)
 				body := startedBody() + strings.Repeat(" ", size-len(startedBody()))
-				r := httptest.NewRequest("POST", "/events", strings.NewReader(body))
+				r := httptest.NewRequest("POST", "/metrics/b/user-login/events", strings.NewReader(body))
 				r.Header.Set("Content-Type", "application/json")
 				if unknownLength {
 					r.ContentLength = -1
@@ -237,11 +236,19 @@ func TestControllerLargeBody(t *testing.T) {
 			})
 		}
 	}
-	assertStructuralRejections(t, []struct{ name, body string }{
+	for _, tc := range []struct{ name, body string }{
 		{"большой невалидный JSON", strings.Repeat("!", 65536)},
 		{"большой хвост", startedBody() + strings.Repeat("!", 65536)},
 		{"второй объект после пробелов", startedBody() + strings.Repeat(" ", 65536) + `{}`},
-	})
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			post(t, f, tc.body, 400, "invalid_event")
+			if f.calls != 0 {
+				t.Fatal("структурный отказ вызвал приём")
+			}
+		})
+	}
 }
 
 type failedReader struct{}
@@ -252,7 +259,7 @@ func (failedReader) Read([]byte) (int, error) {
 
 func TestControllerBodyReadFailure(t *testing.T) {
 	f := newFixture(t)
-	r := httptest.NewRequest("POST", "/events", failedReader{})
+	r := httptest.NewRequest("POST", "/metrics/b/user-login/events", failedReader{})
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	f.controller.AcceptEvent(w, r)
@@ -282,7 +289,7 @@ func TestControllerAcceptErrorsAndLogging(t *testing.T) {
 					cause = fmt.Errorf("контекст: %w", cause)
 				}
 				var logs bytes.Buffer
-				c, err := controller.New(
+				c, err := controller.NewLoginEvent(
 					func(*event.Request) error { return cause },
 					slog.New(slog.NewJSONHandler(&logs, nil)),
 					newTestClock(),

@@ -15,7 +15,7 @@ import (
 // даже при полной очереди. Метод пути проверяет маршрутизация bootstrap.
 func TestControllerTransportChecksBeforeAdmission(t *testing.T) {
 	calls := 0
-	c, err := controller.New(func(*event.Request) error {
+	c, err := controller.NewLoginEvent(func(*event.Request) error {
 		calls++
 		return dError.ErrOverloaded
 	}, slog.New(slog.DiscardHandler), newTestClock())
@@ -65,7 +65,7 @@ func TestControllerAgeBeforeAdmission(t *testing.T) {
 			t.Run(fmt.Sprintf("переполнение=%t/возраст=%s", overloaded, delta), func(t *testing.T) {
 				clock := newTestClock()
 				calls := 0
-				c, err := controller.New(func(*event.Request) error {
+				c, err := controller.NewLoginEvent(func(*event.Request) error {
 					calls++
 					if overloaded {
 						return dError.ErrOverloaded

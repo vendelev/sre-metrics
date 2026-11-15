@@ -25,7 +25,7 @@ tags:
   - name: Events
     description: Приём фактов от доверенных МИС и Auth в Docker-сети ноды.
 paths:
-  /events:
+  /metrics/b/user-login/events:
     post:
       operationId: acceptLoginEvent
       tags: [Events]
@@ -294,7 +294,7 @@ components:
             error: invalid_event
     MethodNotAllowed:
       description: |
-        Метод пути /events отличается от POST. Для HEAD ответ имеет тот же статус
+        Метод пути /metrics/b/user-login/events отличается от POST. Для HEAD ответ имеет тот же статус
         и Allow: POST, но не имеет тела по RFC 9110; JSON-схема ниже для остальных методов.
       headers:
         Allow:

@@ -54,6 +54,10 @@
 
 - Перед написанием, изменением и ревью Go-кода читайте правила оформления:
   [GoStyle.md](.agents/rules/GoStyle.md).
+- Перед написанием, изменением и ревью Go-кода читайте практические рекомендации:
+  [CodeHints.md](.agents/rules/CodeHints.md).
+- Перед проектированием, изменением и ревью HTTP-маршрутов читайте правила именования:
+  [RestApiEndpointNaming.md](.agents/rules/RestApiEndpointNaming.md).
 - Структура пакетов, зависимости, интерфейсы и жизненный цикл:
   [Architecture.md](.agents/rules/Architecture.md).
 - Написание, изменение и оценка тестов:

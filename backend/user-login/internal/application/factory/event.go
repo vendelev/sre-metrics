@@ -1,4 +1,4 @@
-package controller
+package factory
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ type rawEvent struct {
 	Mode       *string `json:"mode"`
 }
 
-func decodeEvent(body io.Reader, now time.Time) (dEvent.Request, error) {
+func DecodeEvent(body io.Reader, now time.Time) (dEvent.Request, error) {
 	var request rawEvent
 	decoder := json.NewDecoder(body)
 

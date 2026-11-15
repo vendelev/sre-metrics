@@ -1,4 +1,4 @@
-package controller_test
+package factory_test
 
 import (
 	"encoding/json"
@@ -9,7 +9,35 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/factory"
+	"github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 )
+
+var (
+	scenarioID = uuid.MustParse("019aabcd-0000-7000-8000-000000000100")
+	eventID    = uuid.MustParse("019aabcd-0000-7000-8000-000000000001")
+	wireTime   = "2026-11-02T12:00:00.000Z"
+)
+
+func eventBody(id uuid.UUID, kind, source, at, mode string) string {
+	body := fmt.Sprintf(`{"event_id":%q,"scenario_id":%q,"occurred_at":%q,"source":%q,"type":%q`,
+		id.String(), scenarioID, at, source, kind)
+	if mode != "" {
+		body += fmt.Sprintf(`,"mode":%q`, mode)
+	}
+	return body + "}"
+}
+
+func startedBody() string { return eventBody(eventID, "login_started", "mis", wireTime, "") }
+
+func decodeEvent(t *testing.T, body string) event.Request {
+	t.Helper()
+	got, err := factory.DecodeEvent(strings.NewReader(body), time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("разбор события: %v", err)
+	}
+	return got
+}
 
 func replaceField(body, name, raw string) string {
 	var fields map[string]json.RawMessage
@@ -124,16 +152,11 @@ func TestEventFieldSchema(t *testing.T) {
 
 func assertStructuralRejections(t *testing.T, cases []struct{ name, body string }) {
 	t.Helper()
-	f := newFixture(t)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := f.calls
-			post(t, f, tc.body, 400, "invalid_event")
-			if f.calls != calls {
-				t.Fatal("структурный отказ вызвал приём")
-			}
-			if len(f.accepted) != 0 {
-				t.Fatal("структурный отказ передал событие в очередь")
+			_, err := factory.DecodeEvent(strings.NewReader(tc.body), time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+			if err == nil {
+				t.Fatal("невалидное событие принято фабрикой")
 			}
 		})
 	}
@@ -151,10 +174,9 @@ func TestEventJSONDecoding(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			post(t, f, valid, 202, "")
-			post(t, f, tc.body, 202, "")
-			if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+			want := decodeEvent(t, valid)
+			got := decodeEvent(t, tc.body)
+			if !reflect.DeepEqual(got, want) {
 				t.Fatal("эквивалентный JSON изменил разобранное событие")
 			}
 		})
@@ -172,12 +194,11 @@ func TestEventUUIDRepresentations(t *testing.T) {
 			"urn:uuid:019aabcd-0000-7000-8000-000000000001",
 		} {
 			t.Run(field+"/"+id, func(t *testing.T) {
-				f := newFixture(t)
 				body := replaceField(startedBody(), field, fmt.Sprintf("%q", id))
-				post(t, f, body, 202, "")
+				got := decodeEvent(t, body)
 				canonical := uuid.MustParse(id).String()
-				post(t, f, replaceField(body, field, fmt.Sprintf("%q", canonical)), 202, "")
-				if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+				want := decodeEvent(t, replaceField(body, field, fmt.Sprintf("%q", canonical)))
+				if !reflect.DeepEqual(got, want) {
 					t.Fatal("другая запись UUID изменила разобранное событие")
 				}
 			})
@@ -189,11 +210,10 @@ func TestEventAbsentMode(t *testing.T) {
 	for _, kind := range []string{"login_started", "login_succeeded", "login_failed", "login_rejected"} {
 		for _, raw := range []string{"", "null", `""`} {
 			t.Run(kind+"/mode="+raw, func(t *testing.T) {
-				f := newFixture(t)
 				body := eventBody(eventID, kind, "mis", wireTime, "")
-				post(t, f, body, 202, "")
-				post(t, f, replaceField(body, "mode", raw), 202, "")
-				if !reflect.DeepEqual(f.accepted[0], f.accepted[1]) {
+				want := decodeEvent(t, body)
+				got := decodeEvent(t, replaceField(body, "mode", raw))
+				if !reflect.DeepEqual(got, want) {
 					t.Fatal("пустой mode изменил разобранное событие")
 				}
 			})
@@ -202,9 +222,14 @@ func TestEventAbsentMode(t *testing.T) {
 }
 
 func TestEventEscapedNamesAndLeapDate(t *testing.T) {
-	f := newFixture(t)
-	f.clock.now = time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
 	body := strings.Replace(startedBody(), wireTime, "2024-02-29T12:00:00.000Z", 1)
 	body = strings.Replace(body, `"type"`, `"\u0074ype"`, 1)
-	post(t, f, body, 202, "")
+	got, err := factory.DecodeEvent(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatalf("разбор события с високосной датой: %v", err)
+	}
+	if !got.OccurredAt.Equal(now) || got.Type != event.LoginStarted {
+		t.Fatalf("неверное преобразование события: %+v", got)
+	}
 }

@@ -8,27 +8,28 @@ import (
 	"net/http"
 
 	"github.com/vendelev/sre-metrics/pkg/clock"
+	"github.com/vendelev/sre-metrics/user-login/internal/application/factory"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 )
 
-// Controller обрабатывает транспортное представление приёма событий:
+// LoginEvent обрабатывает транспортное представление приёма событий:
 // проверяет метод представления, Content-Type, JSON и возраст, преобразует
 // запрос в предметное событие и передаёт его операции приёма. Регистрацию
 // маршрутов выполняет bootstrap модуля.
-type Controller struct {
+type LoginEvent struct {
 	enqueue func(*dEvent.Request) error
 	logger  *slog.Logger
 	clock   clock.Clock
 }
 
-// New принимает готовые операцию приёма, логгер и часы. Зависимости должны
+// NewLoginEvent принимает готовые операцию приёма, логгер и часы. Зависимости должны
 // быть ненулевыми. Контроллер не создаёт зависимости и не запускает сервер.
-func New(
+func NewLoginEvent(
 	enqueue func(*dEvent.Request) error,
 	logger *slog.Logger,
 	clock clock.Clock,
-) (*Controller, error) {
+) (*LoginEvent, error) {
 	if enqueue == nil {
 		return nil, errors.New("не задана операция приёма событий")
 	}
@@ -38,19 +39,19 @@ func New(
 	if clock == nil {
 		return nil, errors.New("не заданы часы HTTP")
 	}
-	return &Controller{enqueue: enqueue, logger: logger, clock: clock}, nil
+	return &LoginEvent{enqueue: enqueue, logger: logger, clock: clock}, nil
 }
 
-// AcceptEvent обрабатывает POST /events и формирует согласованные ответы.
+// AcceptEvent обрабатывает POST /metrics/b/user-login/events и формирует согласованные ответы.
 // accept неблокирующе ставит проверенное событие в очередь. После успеха
 // accept может удерживать событие; контроллер больше его не использует.
-func (c *Controller) AcceptEvent(w http.ResponseWriter, r *http.Request) {
+func (c *LoginEvent) AcceptEvent(w http.ResponseWriter, r *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		writeError(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type")
 		return
 	}
-	event, err := decodeEvent(r.Body, c.clock.Now())
+	event, err := factory.DecodeEvent(r.Body, c.clock.Now())
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_event")
 		return
@@ -67,9 +68,9 @@ func (c *Controller) AcceptEvent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// MethodNotAllowed отвечает на метод пути /events, отличный от POST,
+// MethodNotAllowed отвечает на метод пути /metrics/b/user-login/events, отличный от POST,
 // согласованным статусом, заголовком Allow и телом ошибки.
-func (c *Controller) MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+func (c *LoginEvent) MethodNotAllowed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Allow", http.MethodPost)
 	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed")
 }

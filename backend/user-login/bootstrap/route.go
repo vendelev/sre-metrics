@@ -19,12 +19,12 @@ func routeOf(
 	logger *slog.Logger,
 	clock clock.Clock,
 ) (http.Handler, error) {
-	eventsController, err := controller.New(q.Enqueue, logger.With("component", "http"), clock)
+	eventsController, err := controller.NewLoginEvent(q.Enqueue, logger.With("component", "http"), clock)
 	if err != nil {
 		return nil, err
 	}
 	router := chi.NewRouter()
 	router.MethodNotAllowed(eventsController.MethodNotAllowed)
-	router.Post("/events", eventsController.AcceptEvent)
+	router.Post("/metrics/b/user-login/events", eventsController.AcceptEvent)
 	return router, nil
 }

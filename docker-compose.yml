@@ -27,6 +27,8 @@ services:
             options:
                 max-file: "2"
                 max-size: 5m
+        volumes:
+            - user-login-metrics:/mnt/metrics
         networks:
             - all
             - default
@@ -76,3 +78,11 @@ networks:
     all:
         name: sptr_all
         external: true
+
+volumes:
+    user-login-metrics:
+        driver: local
+        driver_opts:
+            type: tmpfs
+            device: tmpfs
+            o: size=268435456,mode=0777

@@ -31,8 +31,8 @@ func TestNewRouterMountsModuleRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ path, want string }{
-		{"/login/events", "login:/login/events"},
-		{"/patient/events", "patient:/patient/events"},
+		{"/login/metrics/b/user-login/events", "login:/login/metrics/b/user-login/events"},
+		{"/patient/metrics/b/user-login/events", "patient:/patient/metrics/b/user-login/events"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()

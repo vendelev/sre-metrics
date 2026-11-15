@@ -41,7 +41,7 @@ func routeFixture(t *testing.T) (http.Handler, *queue.EventQueue, *bytes.Buffer)
 }
 
 func routeRequest(handler http.Handler, method, mediaType, body string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, "/events", strings.NewReader(body))
+	r := httptest.NewRequest(method, "/metrics/b/user-login/events", strings.NewReader(body))
 	if mediaType != "" {
 		r.Header.Set("Content-Type", mediaType)
 	}
@@ -72,16 +72,23 @@ func assertRouteResponse(t *testing.T, w *httptest.ResponseRecorder, status int,
 
 func TestRouteRegistration(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := routeFixture(t)
 	for _, tc := range []struct {
 		path   string
 		status int
 	}{
-		{"/events", 202}, {"/events?test=1", 202}, {"/", 404}, {"/other", 404},
-		{"/events/", 404}, {"/events/extra", 404}, {"/Events", 404}, {"//events", 404}, {"/other/../events", 404},
+		{"/metrics/b/user-login/events", 202},
+		{"/metrics/b/user-login/events?test=1", 202},
+		{"/", 404},
+		{"/other", 404},
+		{"/metrics/b/user-login/events/", 404},
+		{"/metrics/b/user-login/events/extra", 404},
+		{"/metrics/b/user-login/Events", 404},
+		{"//metrics/b/user-login/events", 404},
+		{"/other/../metrics/b/user-login/events", 404},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()
+			handler, _, _ := routeFixture(t)
 			w := routeRequestAt(handler, tc.path)
 			if w.Code != tc.status || w.Header().Get("Location") != "" {
 				t.Fatalf("путь %s: статус %d, заголовки %v", tc.path, w.Code, w.Header())
@@ -101,7 +108,7 @@ func routeRequestAt(handler http.Handler, path string) *httptest.ResponseRecorde
 	return w
 }
 
-// Bootstrap регистрирует POST /events и передаёт неподдерживаемые методы
+// Bootstrap регистрирует POST /metrics/b/user-login/events и передаёт неподдерживаемые методы
 // контроллеру; транспортные правила самого контроллера проверяет его пакет.
 func TestRouteMethods(t *testing.T) {
 	handler, q, _ := routeFixture(t)

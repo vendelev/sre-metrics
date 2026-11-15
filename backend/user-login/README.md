@@ -8,7 +8,7 @@
 
 ## Статус
 
-Работают асинхронный HTTP-приём `POST /events` через ограниченную очередь в памяти,
+Работают асинхронный HTTP-приём `POST /metrics/b/user-login/events` через ограниченную очередь в памяти,
 последовательная предметная обработка, локальное накопление
 Counter и Histogram в OpenTelemetry Go SDK `v1.47.0`, периодическое обслуживание
 сценариев и штатная остановка. Компоненты собираются контейнером зависимостей dig
@@ -46,7 +46,7 @@ HTTP-вход собирается в [routeOf](bootstrap/route.go): bootstrap �
 через [Module.Handler](bootstrap/runtime.go). [rootHandler](../cmd/user-login-httpserver/bootstrap/route.go)
 приложения агрегирует маршруты из DI-группы через [httproute.NewRouter](../pkg/httproute/router.go)
 и передаёт core единый `http.Handler`;
-для текущего одиночного приложения префикс `/` сохраняет внешний путь `/events`.
+для текущего одиночного приложения префикс `/` сохраняет внешний путь `/metrics/b/user-login/events`.
 Controller не имеет доступа к состоянию сценариев.
 Ответ `202` без тела подтверждает постановку, но не обработку или доставку метрик;
 `503 overloaded` означает полную очередь и отсутствие постановки.
@@ -92,7 +92,7 @@ SIGINT/SIGTERM; при ошибке запуска или работы проц�
 Команды сборки, требования к окружению и общие проверки — в [инструкции разработки](../../docs/development.md).
 В [локальном Compose-стенде](../../docker/otel-collector/README.md) тот же сервис
 называется `user-login-metrics` и собирается через [docker/metrics/Dockerfile](../../docker/metrics/Dockerfile).
-API доступен доверенным отправителям как `http://user-login-metrics:8080/events`, без host-порта и маршрута Traefik.
+API доступен доверенным отправителям как `http://user-login-metrics:8080/metrics/b/user-login/events`, без host-порта и маршрута Traefik.
 
 После сборки для ручного запуска на хосте явно ограничьте адрес loopback:
 

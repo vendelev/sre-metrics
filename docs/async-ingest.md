@@ -31,7 +31,7 @@ flowchart LR
 ## 2. Как принимается HTTP-запрос
 
 Код: [controller.go](../backend/user-login/internal/presentation/http/controller/controller.go),
-[event.go](../backend/user-login/internal/presentation/http/controller/event.go),
+[event.go](../backend/user-login/internal/application/factory/event.go),
 [event_queue.go](../backend/user-login/internal/infrastructure/queue/event_queue.go). Регистрирует
 маршруты [bootstrap](../backend/user-login/bootstrap/route.go).
 
@@ -62,7 +62,7 @@ sequenceDiagram
     participant Q as Очередь
     participant W as Воркер
 
-    S->>H: POST /events
+    S->>H: POST /metrics/b/user-login/events
     H->>H: Разобрать запрос
     H->>H: Проверить возраст
 

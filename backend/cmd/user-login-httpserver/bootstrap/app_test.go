@@ -91,7 +91,7 @@ func TestAppAsyncAdmissionAndQueueDrain(t *testing.T) {
 				tc.at.Format("2006-01-02T15:04:05.000Z"),
 			)
 			response, err := client.Post(
-				"http://"+running.address.String()+"/events",
+				"http://"+running.address.String()+"/metrics/b/user-login/events",
 				"application/json",
 				strings.NewReader(body),
 			)
@@ -169,7 +169,7 @@ func TestAppQueueDrainDeadline(t *testing.T) {
 		c.Now().Format("2006-01-02T15:04:05.000Z"),
 	)
 	response, err := client.Post(
-		"http://"+running.address.String()+"/events",
+		"http://"+running.address.String()+"/metrics/b/user-login/events",
 		"application/json",
 		strings.NewReader(body),
 	)
@@ -200,7 +200,7 @@ func TestAppStoredDuplicateAge(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	defer client.CloseIdleConnections()
 	response, err := client.Post(
-		"http://"+running.address.String()+"/events",
+		"http://"+running.address.String()+"/metrics/b/user-login/events",
 		"application/json",
 		strings.NewReader(body),
 	)

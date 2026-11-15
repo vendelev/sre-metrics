@@ -46,7 +46,7 @@ func sendServiceEvent(
 	)
 	request, err := http.NewRequest(
 		http.MethodPost,
-		"http://"+running.address.String()+"/events",
+		"http://"+running.address.String()+"/metrics/b/user-login/events",
 		strings.NewReader(body),
 	)
 	if err != nil {
