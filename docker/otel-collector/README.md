@@ -2,7 +2,7 @@
 
 Основной [docker-compose.yml](../../docker-compose.yml) запускает `user-login-metrics`
 (сервис [user-login](../../backend/user-login/README.md)) и основной Collector,
-а через `include` подключает Grafana/Prometheus/Tempo/Loki и SigNoz.
+а через `include` подключает [Grafana, Prometheus, Tempo и Loki](../../docker-compose.grafana.yml).
 Локальный `docker-compose.override.yml` не требуется.
 
 ## Потоки данных
@@ -10,18 +10,18 @@
 - Метрики сценариев: HTTP-события на `user-login-metrics:8080/metrics/b/user-login/events` → SDK user-login → OTLP/HTTP
   `metrics-otel-collector:4318/v1/metrics` → Prometheus exporter `metrics-otel-collector:8889`
   → scrape Prometheus → recording rules → Grafana.
-- Копия метрик: основной Collector → `signoz-collector:4317` → ClickHouse SigNoz.
-- Трейсы внешних приложений: основной Collector → Tempo и SigNoz Collector.
-  Коннектор `spanmetrics` дополнительно формирует метрики спанов.
+- Трейсы внешних приложений: основной Collector → Tempo.
+  Коннектор `spanmetrics` дополнительно формирует метрики спанов для Prometheus
+  с префиксом `traces_span_metrics_`.
 - Логи внешних приложений: OTLP → основной Collector → Loki.
   Stdout контейнеров автоматически не собирается; user-login пишет логи в stderr,
   не экспортирует их по OTLP и не создаёт трейсы.
 - Метрики связей сервисов: Tempo → Prometheus через remote write `/api/v1/write`.
 
-Collector читает конфиги по порядку: [config.yaml](config.yaml), [local.yaml](local.yaml),
-[signoz.yaml](signoz.yaml). Словари объединяются, списки экспортёров из последующего
-файла заменяют предыдущие. Базовый конфиг без дополнений хранит только метрики
-для scrape и преобразует трейсы в метрики спанов; сами трейсы не сохраняет.
+Collector читает [config.yaml](config.yaml), затем [local.yaml](local.yaml).
+Базовый конфиг отдаёт метрики для scrape и преобразует трейсы в метрики спанов.
+Локальное дополнение направляет трейсы в Tempo, сохраняя преобразование в метрики,
+и добавляет приём логов для Loki.
 
 ## Контракт метрик входа
 
@@ -46,12 +46,10 @@ Prometheus загружает [контрактные recording rules](../../doc
 
 Нужны Docker с Compose, поддерживающим `include`, доступ к registry образов
 и существующая доверенная внешняя сеть `sptr_all` с отправителями событий.
-Основной Collector использует образ из приватного registry: может потребоваться `docker login`.
-Первичная инициализация SigNoz также требует доступа к GitHub.
 
-Grafana и SigNoz доступны через существующий Traefik в `sptr_all`:
-`http://grafana.test/` и `http://signoz.test/`. Добавьте домены в локальное разрешение имён.
-Домены меняются через `GRAFANA_DOMAIN` и `SIGNOZ_DOMAIN`.
+Grafana доступна через существующий Traefik в `sptr_all` по адресу
+`http://grafana.test/`. Домен задаётся через `GRAFANA_DOMAIN`; добавьте его
+в локальное разрешение имён.
 Задайте `GRAFANA_ADMIN_PASSWORD` перед первым запуском; умолчание `admin`
 допустимо только на изолированном локальном стенде.
 `ENTERPRISE_NAME` задаёт домен существующего маршрута приёма внешних трейсов
@@ -66,8 +64,15 @@ test -e .env || cp .env.example .env
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps -a
-docker compose logs --tail=100 user-login-metrics otel-collector signoz-migrate
+docker compose logs --tail=100 user-login-metrics metrics-otel-collector
 ```
+
+При обновлении ранее запущенного стенда проверьте `docker compose ps -a`.
+Если остались контейнеры удалённых сервисов, добавьте `--remove-orphans` к команде
+`docker compose up` для того же Compose-проекта. Флаг удалит контейнеры всех
+сервисов этого проекта, которых больше нет в конфигурации, но сохранит именованные тома.
+В собственных запросах к метрикам спанов используйте префикс `traces_span_metrics_`.
+Имена метрик входа не изменились.
 
 `user-login-metrics` собирается из [docker/metrics/Dockerfile](../metrics/Dockerfile)
 с контекстом корня проекта; версия Go должна совпадать с `../../backend/go.mod`.
@@ -78,16 +83,15 @@ Compose передаёт сервису корневой `.env` через `env_
 Экспорт использует стандартные `OTEL_*`; интервалы и timeout SDK в `.env` указаны в миллисекундах.
 Порты API событий, OTLP и хранилищ на хост не публикуются.
 Отправляйте события из доверенной сети на `http://user-login-metrics:8080/metrics/b/user-login/events`.
-Внутри сети используйте DNS-имена сервисов Compose (`otel-collector`, `user-login-metrics`),
+Внутри сети используйте DNS-имена сервисов Compose (`metrics-otel-collector`, `user-login-metrics`),
 не привязывая клиентов к значениям `container_name`.
 API не имеет отдельной аутентификации: состав `sptr_all` является границей доверия.
 
-SigNoz запускается через init и миграции, затем основной Collector и приложение.
 Healthcheck основного Collector проверяет конфигурацию командой `validate`,
 а не готовность OTLP или доставку данных. Перед тестовым трафиком дождитесь
 успешного экспорта и исходного scrape. Описание отправки синтетического события —
 в [инструкции разработки](../../docs/development.md).
-Проверка HTTP 204 не подтверждает доставку метрик.
+Ответ HTTP 202 не подтверждает доставку метрик.
 
 Для остановки приложения с финальным best-effort экспортом сначала выполните
 `docker compose stop user-login-metrics`, пока Collector ещё работает.
@@ -109,7 +113,3 @@ Tempo и Loki ограничены 256 MiB памяти каждый; конфи
 В Tempo включены `local-blocks` для TraceQL metrics и `service-graphs`.
 Они требуют нового инструментированного трафика; user-login сам его не создаёт.
 Метрики спанов создаёт Collector, а не процессор `span-metrics` Tempo.
-
-Ресурсы, retention и отключение параллельного получателя описаны в
-[README SigNoz](../signoz/README.md). Остановка одного SigNoz при активном экспортёре
-приводит к повторным отправкам и возможной потере его копии данных.
