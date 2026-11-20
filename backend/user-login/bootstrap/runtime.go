@@ -2,11 +2,13 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/vendelev/sre-metrics/pkg/fileinbox"
 	"github.com/vendelev/sre-metrics/pkg/task"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
@@ -20,10 +22,12 @@ import (
 type Module struct {
 	recorder *otel.Recorder
 	worker   *worker.Worker
+	inbox    *fileinbox.Inbox
 	queue    *queue.EventQueue
 	handler  http.Handler
 
 	workerTask *task.Task
+	inboxTask  *task.Task
 	failed     chan struct{}
 }
 
@@ -33,14 +37,17 @@ func (m *Module) Handler() http.Handler {
 	return m.handler
 }
 
-// Start активирует предметные инструменты модуля в meter общего pipeline
-// core. Выполняется однократно после запуска pipeline, до HTTP и обслуживания.
+// Start активирует предметные инструменты и диагностику файлового входа
+// в meter общего pipeline core. Вызывается однократно до запуска входов.
 func (m *Module) Start(ctx context.Context, meter metric.Meter) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := m.recorder.Activate(meter); err != nil {
 		return fmt.Errorf("активация метрик user-login: %w", err)
+	}
+	if err := m.inbox.ActivateMetrics(ctx, meter); err != nil {
+		return fmt.Errorf("активация метрик файлового входа: %w", err)
 	}
 	return ctx.Err()
 }
@@ -52,15 +59,7 @@ func (m *Module) StartWorker(ctx context.Context) error {
 		return err
 	}
 	m.workerTask = task.New()
-	go func() {
-		m.workerTask.Complete(m.worker.Run())
-		if m.workerTask.Err() != nil {
-			select {
-			case m.failed <- struct{}{}:
-			default:
-			}
-		}
-	}()
+	go m.runTask(m.workerTask, m.worker.Run)
 	return nil
 }
 
@@ -70,9 +69,57 @@ func (m *Module) WorkerTask() *task.Task {
 	return m.workerTask
 }
 
+// StartInbox запускает файловый вход и ждёт доступности каталога.
+// При отмене запуска подаёт сигнал остановки; завершения ждёт владелец очистки.
+func (m *Module) StartInbox(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	inboxTask := task.New()
+	m.inboxTask = inboxTask
+	go m.runTask(inboxTask, m.inbox.Run)
+	select {
+	case <-m.inbox.Ready():
+	case <-inboxTask.Done():
+		if err := inboxTask.Err(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errors.New("файловый вход завершился до готовности")
+	case <-ctx.Done():
+	}
+	if err := ctx.Err(); err != nil {
+		m.StopInbox()
+		return err
+	}
+	return nil
+}
+
+// InboxTask возвращает задачу файлового входа или nil, если она не запущена.
+func (m *Module) InboxTask() *task.Task {
+	return m.inboxTask
+}
+
+// StopInbox сигнализирует об остановке без ожидания задачи и не закрывает очередь.
+func (m *Module) StopInbox() {
+	m.inbox.Stop()
+}
+
+func (m *Module) runTask(t *task.Task, run func() error) {
+	err := run()
+	t.Complete(err)
+	if err != nil {
+		select {
+		case m.failed <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // Failed сигнализирует о неожиданной ошибке фоновой задачи модуля. Буфер
-// один: приложение узнаёт о первой ошибке, повторное уведомление не
-// накапливается.
+// один: уведомления могут объединяться, причины сохраняются в результатах задач.
 func (m *Module) Failed() <-chan struct{} {
 	return m.failed
 }
@@ -85,7 +132,7 @@ func (m *Module) StopMaintenance() {
 }
 
 // CloseQueue закрывает приём: новые постановки невозможны, очередь дочитывается
-// воркером. Вызывается после HTTP Shutdown, когда новых постановок нет.
+// воркером. Вызывается после HTTP Shutdown и сигнала остановки файлового входа.
 func (m *Module) CloseQueue() {
 	m.queue.Close()
 }

@@ -11,18 +11,21 @@ import (
 )
 
 // taskResult сводит фоновые задачи запуска к общему виду для неблокирующего
-// чтения ошибок: HTTP-задачу публикует runtime core, задачу воркера — модуль.
+// чтения ошибок: HTTP-задачу публикует runtime core, остальные — модуль.
 type taskResult struct {
 	done <-chan struct{}
 	err  func() error // Читается только после закрытия done.
 }
 
 func (a *App) taskResults() []taskResult {
-	tasks := make([]taskResult, 0, 2)
+	tasks := make([]taskResult, 0, 3)
 	if serve := a.server.ServeTask(); serve != nil {
 		tasks = append(tasks, taskResult{done: serve.Done(), err: serve.Err})
 	}
 	if task := a.module.WorkerTask(); task != nil {
+		tasks = append(tasks, taskResult{done: task.Done(), err: task.Err})
+	}
+	if task := a.module.InboxTask(); task != nil {
 		tasks = append(tasks, taskResult{done: task.Done(), err: task.Err})
 	}
 	return tasks
@@ -57,8 +60,11 @@ func (a *App) run(ctx context.Context, ready func(net.Addr)) error {
 func (a *App) start(ctx context.Context) error {
 	if err := a.startResources(ctx); err != nil {
 		// Неуспешный запуск сам выполняет ту же процедуру очистки; ошибка
-		// очистки дополняет исходную.
+		// очистки дополняет исходную, если та ещё не получена из задачи.
 		if cleanupErr := a.stop(ctx); cleanupErr != nil {
+			if errors.Is(cleanupErr, err) {
+				return cleanupErr
+			}
 			return errors.Join(err, cleanupErr)
 		}
 		return err
@@ -67,7 +73,7 @@ func (a *App) start(ctx context.Context) error {
 }
 
 // startResources открывает ресурсы в согласованном порядке: listener →
-// SDK/pipeline → активация инструментов модуля → воркер → HTTP → готовность.
+// SDK/pipeline → активация инструментов модуля → воркер → файловый вход → HTTP → готовность.
 func (a *App) startResources(ctx context.Context) error {
 	if err := a.server.Open(ctx); err != nil {
 		return err
@@ -76,6 +82,9 @@ func (a *App) startResources(ctx context.Context) error {
 		return err
 	}
 	if err := a.module.StartWorker(ctx); err != nil {
+		return err
+	}
+	if err := a.module.StartInbox(ctx); err != nil {
 		return err
 	}
 	if err := a.server.StartServe(ctx); err != nil {
@@ -128,6 +137,7 @@ func (a *App) shutdown(ctx context.Context) error {
 	// Прекращение планирования обслуживания опережает HTTP Shutdown: воркер
 	// дожидается начатой операции, новые тики не планируются.
 	a.module.StopMaintenance()
+	a.module.StopInbox()
 	if a.module.WorkerTask() != nil {
 		stopDeadline := context.AfterFunc(ctx, a.module.Terminate)
 		defer stopDeadline()
@@ -138,8 +148,8 @@ func (a *App) shutdown(ctx context.Context) error {
 		// компонента, ошибки объединяются.
 		httpErr = a.server.Shutdown(ctx)
 	}
-	// После HTTP Shutdown новых постановок нет. Даже при истёкшем бюджете
-	// поздний обработчик не сможет поставить событие после завершения воркера.
+	// После сигнала файловому входу и HTTP Shutdown закрываем приём. Даже при
+	// истёкшем бюджете поздний обработчик не сможет поставить событие в очередь.
 	a.module.CloseQueue()
 	drainErr := a.waitTasks(ctx)
 	if drainErr != nil && httpErr == nil {
@@ -161,10 +171,9 @@ func (a *App) shutdown(ctx context.Context) error {
 	return result
 }
 
-// waitTasks дожидается завершения HTTP-задачи и обработки остатка очереди
-// воркером в пределах одного бюджета.
+// waitTasks дожидается завершения HTTP, обработки остатка очереди
+// воркером и файлового входа в пределах одного бюджета.
 func (a *App) waitTasks(ctx context.Context) error {
-	var result error
 	if serve := a.server.ServeTask(); serve != nil {
 		select {
 		case <-serve.Done():
@@ -173,12 +182,19 @@ func (a *App) waitTasks(ctx context.Context) error {
 		}
 	}
 	if err := a.module.Drain(ctx); err != nil {
-		result = errors.Join(result, err)
+		return err
+	}
+	if inbox := a.module.InboxTask(); inbox != nil {
+		select {
+		case <-inbox.Done():
+		case <-ctx.Done():
+			return fmt.Errorf("исчерпан бюджет завершения файлового входа: %w", ctx.Err())
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("исчерпан бюджет завершения обработки: %w", err)
 	}
-	return result
+	return nil
 }
 
 func (a *App) taskErrors() error {

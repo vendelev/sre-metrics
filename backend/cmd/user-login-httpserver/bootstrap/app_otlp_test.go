@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,19 +24,12 @@ import (
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 )
 
-func sendServiceEvent(
-	t *testing.T,
-	running *runningService,
-	id, scenario int,
-	kind string,
-	at time.Time,
-) error {
-	t.Helper()
+func serviceEventJSON(id, scenario int, kind string, at time.Time) string {
 	source, extra := "mis", ""
 	if kind == "login_mode_determined" {
 		source, extra = "auth", `,"mode":"credentials"`
 	}
-	body := fmt.Sprintf(
+	return fmt.Sprintf(
 		`{"event_id":"019aabcd-0000-7000-8000-%012x","scenario_id":"019aabcd-0000-7000-9000-%012x","occurred_at":%q,"source":%q,"type":%q%s}`,
 		id,
 		scenario,
@@ -44,10 +38,20 @@ func sendServiceEvent(
 		kind,
 		extra,
 	)
+}
+
+func sendServiceEvent(
+	t *testing.T,
+	running *runningService,
+	id, scenario int,
+	kind string,
+	at time.Time,
+) error {
+	t.Helper()
 	request, err := http.NewRequest(
 		http.MethodPost,
 		"http://"+running.address.String()+"/metrics/b/user-login/events",
-		strings.NewReader(body),
+		strings.NewReader(serviceEventJSON(id, scenario, kind, at)),
 	)
 	if err != nil {
 		return err
@@ -66,12 +70,26 @@ func sendServiceEvent(
 	return nil
 }
 
+func publishInboxFile(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path+".tmp", []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".tmp", path+".json"); err != nil {
+		t.Fatal(err)
+	}
+	return path + ".json"
+}
+
 type serviceValues struct {
-	completed map[string]int64
-	errors    map[string]int64
-	histogram *metricpb.HistogramDataPoint
-	instance  string
-	starts    map[string]uint64
+	completed   map[string]int64
+	errors      map[string]int64
+	histogram   *metricpb.HistogramDataPoint
+	instance    string
+	starts      map[string]uint64
+	inbox       map[string]int64
+	inboxGauges map[string]bool
 }
 
 func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest) serviceValues {
@@ -96,10 +114,12 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 		t.Fatal("scope сервиса")
 	}
 	values := serviceValues{
-		completed: make(map[string]int64),
-		errors:    make(map[string]int64),
-		starts:    make(map[string]uint64),
-		instance:  instance,
+		completed:   make(map[string]int64),
+		errors:      make(map[string]int64),
+		starts:      make(map[string]uint64),
+		instance:    instance,
+		inbox:       make(map[string]int64),
+		inboxGauges: make(map[string]bool),
 	}
 	for _, m := range rm.ScopeMetrics[0].Metrics {
 		if sum := m.GetSum(); sum != nil {
@@ -119,11 +139,22 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 					values.completed[value] = point.GetAsInt()
 				case userlogin.TechnicalErrorsName:
 					values.errors[value] = point.GetAsInt()
+				case "file.inbox.events":
+					if point.Attributes[0].Key != "outcome" {
+						t.Fatal("лишний атрибут Counter файлового входа")
+					}
+					values.inbox[value] = point.GetAsInt()
+					continue
 				default:
 					t.Fatal("лишний Counter")
 				}
 				values.starts[m.Name+value] = point.StartTimeUnixNano
 			}
+			continue
+		}
+		if m.GetGauge() != nil {
+			checkInboxGauge(t, m)
+			values.inboxGauges[m.Name] = true
 			continue
 		}
 		h := m.GetHistogram()
@@ -152,6 +183,20 @@ func serviceMetrics(t *testing.T, message *collector.ExportMetricsServiceRequest
 		}
 	}
 	return values
+}
+
+func checkInboxGauge(t *testing.T, m *metricpb.Metric) {
+	t.Helper()
+	units := map[string]string{
+		"file.inbox.files":           "{file}",
+		"file.inbox.size":            "By",
+		"file.inbox.oldest_file.age": "s",
+		"file.inbox.volume.usage":    "1",
+	}
+	points := m.GetGauge().DataPoints
+	if m.Unit == "" || m.Unit != units[m.Name] || len(points) != 1 || len(points[0].Attributes) != 0 {
+		t.Fatalf("неверный Gauge файлового входа: %s", m)
+	}
 }
 
 func nextServiceMetrics(
@@ -192,13 +237,51 @@ func lastServiceMetrics(t *testing.T, r *oteltest.Receiver) serviceValues {
 	}
 }
 
+// BR-25, BR-41: HTTP и файл дополняют один сценарий, а SDK экспортирует его
+// исход и длительность. Имя файла не определяет event_id.
+func TestAppInboxExportsSharedState(t *testing.T) {
+	r := oteltest.NewReceiver(t)
+	cfg, settings, process := actualConfig(t, r)
+	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
+	app := testApp(t, process, cfg, settings, c)
+	running := runActual(t, app)
+	if app.module.InboxTask() == nil || app.server.ServeTask() == nil {
+		t.Fatal("готовность объявлена до запуска обоих входов")
+	}
+	now := c.Now()
+	if err := sendServiceEvent(t, running, 1, 100, "login_started", now.Add(-5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sendServiceEvent(t, running, 2, 100, "login_mode_determined", now); err != nil {
+		t.Fatal(err)
+	}
+	path := publishInboxFile(t, cfg.Inbox.Dir, "019aabcd-0000-7000-8000-000000000099",
+		serviceEventJSON(3, 100, "login_succeeded", now))
+	publishInboxFile(t, cfg.Inbox.Dir, "019aabcd-0000-7000-8000-000000000098", "синтетический секрет")
+	sample := nextServiceMetrics(t, r, func(_ oteltest.Sample, v serviceValues) bool {
+		return v.histogram != nil && v.inbox["accepted"] == 1 && v.inbox["invalid_event"] == 1
+	})
+	if sample.completed["success"] != 1 || sample.histogram.Count != 1 || sample.histogram.GetSum() != 5 {
+		t.Fatalf("HTTP и файл не дополнили один сценарий: %+v", sample)
+	}
+	if len(sample.inbox) != 5 || !sample.inboxGauges["file.inbox.oldest_file.age"] {
+		t.Fatalf("неполная диагностика файлового входа: %+v", sample)
+	}
+	if err := running.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("принятый файл остался после завершения: %v", err)
+	}
+}
+
 // BR-42, AC-31: обслуживание завершается до последнего пакета, а принятые
 // события и drain очереди включаются в него. Дожидание активного обработчика
 // HTTP и принудительное закрытие зависшего соединения проверяет пакет httpserver.
 func TestAppOTLPFinalAfterProcessing(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	cfg, settings, process := actualConfig(t, r)
-	cfg.MaintenanceInterval = 20 * time.Millisecond
+	cfg.Processing.MaintenanceInterval = 20 * time.Millisecond
 	// Явная View гистограммы модуля сохраняет контракт buckets независимо
 	// от агрегации, выбранной экспортёром по умолчанию.
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION", "base2_exponential_bucket_histogram")
@@ -371,7 +454,7 @@ func TestAppSharedShutdownBudget(t *testing.T) {
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "5000")
 	process.ShutdownTimeout = time.Second
-	cfg.MaintenanceInterval = time.Millisecond
+	cfg.Processing.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
 	app := testApp(t, process, cfg, settings, c)
 	releaseMaintenance := sync.OnceFunc(func() { close(c.release) })
@@ -414,7 +497,7 @@ func TestAppIncompleteDrainShutsDownSDK(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	cfg, settings, process := actualConfig(t, r)
 	process.ShutdownTimeout = 300 * time.Millisecond
-	cfg.MaintenanceInterval = time.Millisecond
+	cfg.Processing.MaintenanceInterval = time.Millisecond
 	c := newBarrierClock(time.Now().UTC().Truncate(time.Millisecond))
 	app := testApp(t, process, cfg, settings, c)
 	releaseOnce := sync.OnceFunc(func() { close(c.release) })

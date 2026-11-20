@@ -70,6 +70,7 @@ services:
         volumes:
             - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
             - ./docs/specs/login-observability.prometheus.rules.yml:/etc/prometheus/rules/login-observability.yml:ro
+            - ./docker/prometheus/file-inbox.rules.yml:/etc/prometheus/rules/file-inbox.yml:ro
             - prometheus_data:/prometheus
         healthcheck:
             test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/ready"]

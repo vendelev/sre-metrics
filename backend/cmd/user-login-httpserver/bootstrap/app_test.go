@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +24,7 @@ import (
 func TestAppSharesState(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	cfg, settings, process := actualConfig(t, r)
-	cfg.MaintenanceInterval = 5 * time.Millisecond
+	cfg.Processing.MaintenanceInterval = 5 * time.Millisecond
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 	app := testApp(t, process, cfg, settings, c)
 	running := runActual(t, app)
@@ -50,8 +52,8 @@ func TestAppAsyncAdmissionAndQueueDrain(t *testing.T) {
 	cfg, settings, process := actualConfig(t, r)
 	// Интервал обслуживания больше сегмента отправки: воркер детерминированно
 	// уходит в барьер первым тиком, не успевая взять события из очереди.
-	cfg.EventQueueSize = 3
-	cfg.MaintenanceInterval = time.Second
+	cfg.Processing.EventQueueSize = 3
+	cfg.Processing.MaintenanceInterval = time.Second
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	c := newBarrierClock(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
 	app := testApp(t, process, cfg, settings, c)
@@ -139,7 +141,7 @@ func TestAppQueueDrainDeadline(t *testing.T) {
 	r := oteltest.NewReceiver(t)
 	cfg, settings, process := actualConfig(t, r)
 	process.ShutdownTimeout = 100 * time.Millisecond
-	cfg.MaintenanceInterval = time.Second
+	cfg.Processing.MaintenanceInterval = time.Second
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
 	// Часы в UTC: литеральная Z в формате тела означает UTC, а локальная зона
 	// сместила бы occurred_at и отклонила бы возраст события.
@@ -258,12 +260,102 @@ func TestAppRunCancelledBeforeStartup(t *testing.T) {
 	}
 }
 
+func TestAppInboxUnavailableBeforeReady(t *testing.T) {
+	r := oteltest.NewReceiver(t)
+	cfg, settings, process := actualConfig(t, r)
+	cfg.Inbox.Dir = filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(cfg.Inbox.Dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := testApp(t, process, cfg, settings, &testClock{now: time.Now()})
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ready := false
+	err := app.run(ctx, func(net.Addr) { ready = true })
+	if _, ok := errors.AsType[*os.PathError](err); !ok {
+		t.Fatalf("ошибка доступа к каталогу не сохранена: %v", err)
+	}
+	if ready || app.server.ServeTask() != nil {
+		t.Fatal("ошибка каталога не остановила запуск до HTTP и готовности")
+	}
+	assertListenerClosed(t, app)
+}
+
+func TestAppInboxDisappearsAfterReady(t *testing.T) {
+	r := oteltest.NewReceiver(t)
+	cfg, settings, process := actualConfig(t, r)
+	cfg.Inbox.ScanInterval = 10 * time.Millisecond
+	app := testApp(t, process, cfg, settings, &testClock{now: time.Now()})
+	running := runActual(t, app)
+	if err := os.Remove(cfg.Inbox.Dir); err != nil {
+		t.Fatal(err)
+	}
+	// Запуск ещё не отменён: процесс должен завершиться по сигналу задачи.
+	waitSignal(t, running.done)
+	if !errors.Is(running.err, os.ErrNotExist) || !strings.Contains(running.err.Error(), "при сканировании") {
+		t.Fatalf("ошибка исчезнувшего каталога потеряна: %v", running.err)
+	}
+	assertListenerClosed(t, app)
+}
+
+// AC-31: блокируем чтение часов только в обработке файла. Остановка не
+// дожидается произвольной Go-функции сверх общего бюджета; SDK не получает новый
+// срок, а запоздалое событие не принимается в закрытую очередь.
+func TestAppBlockedInboxSharesShutdownBudget(t *testing.T) {
+	r := oteltest.NewReceiver(t)
+	r.SetHold(true)
+	defer r.Release()
+	cfg, settings, process := actualConfig(t, r)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "5000")
+	cfg.Inbox.Dir = t.TempDir()
+	cfg.Processing.MaintenanceInterval = time.Minute
+	process.ShutdownTimeout = 400 * time.Millisecond
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	path := publishInboxFile(t, cfg.Inbox.Dir, "019aabcd-0000-7000-8000-000000000001",
+		serviceEventJSON(1, 100, "login_succeeded", now))
+	c := newBarrierClock(now)
+	app := testApp(t, process, cfg, settings, c)
+	release := sync.OnceFunc(func() { close(c.release) })
+	defer release()
+	c.armed.Store(true)
+	running := runActual(t, app)
+	inbox := app.module.InboxTask()
+	if inbox == nil {
+		t.Fatal("нет задачи файлового входа")
+	}
+	defer func() { release(); waitSignal(t, inbox.Done()) }()
+	waitSignal(t, c.entered)
+
+	started := time.Now()
+	err := running.stop(t)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "завершения файлового входа") {
+		t.Fatalf("незавершённый файловый вход скрыт: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*process.ShutdownTimeout/2 {
+		t.Fatalf("остановка вышла за общий бюджет: %s", elapsed)
+	}
+	select {
+	case <-inbox.Done():
+		t.Fatal("блокировка файлового входа снялась раньше времени")
+	default:
+	}
+	release()
+	waitSignal(t, inbox.Done())
+	if inbox.Err() != nil {
+		t.Fatalf("файловый вход не остановился штатно после снятия блокировки: %v", inbox.Err())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("файл удалён без постановки в очередь: %v", err)
+	}
+}
+
 // Ошибка конструктора memory теряется при сборке контейнера и останавливает
 // запуск до открытия ресурсов.
 func TestAppConstructorError(t *testing.T) {
 	t.Parallel()
 	cfg := userloginconfig.Default()
-	cfg.MaxScenarios = 0
+	cfg.Processing.MaxScenarios = 0
 	app, err := newApp(
 		appconfig.Default(),
 		&cfg,
@@ -279,11 +371,26 @@ func TestAppConstructorError(t *testing.T) {
 	}
 }
 
+func TestAppInboxConstructorError(t *testing.T) {
+	t.Parallel()
+	cfg := userloginconfig.Default()
+	cfg.Inbox.Dir = filepath.Join(t.TempDir(), "inbox")
+	cfg.Inbox.ScanInterval = 0
+	app, err := newApp(appconfig.Default(), &cfg, coreconfig.Default(),
+		slog.New(slog.DiscardHandler), &testClock{now: time.Now()})
+	if app != nil || err == nil || !strings.Contains(err.Error(), "сборка файлового входа") {
+		t.Fatalf("ошибка сборки файлового входа потеряна: %v", err)
+	}
+	if _, err := os.Stat(cfg.Inbox.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("сборка открыла каталог: %v", err)
+	}
+}
+
 // Проверка внутренних фаз не требует внедряемого сбоя готовности в рабочем
 // коде. Отмена задаётся между фазами, затем вызывается тот же протокол
 // очистки.
 func TestAppStartupCancellationBetweenPhases(t *testing.T) {
-	for _, phase := range []string{"после bind", "после SDK", "после воркера", "после HTTP"} {
+	for _, phase := range []string{"после bind", "после SDK", "после воркера", "после файлового входа", "после HTTP"} {
 		t.Run(phase, func(t *testing.T) {
 			r := oteltest.NewReceiver(t)
 			cfg, settings, process := actualConfig(t, r)
@@ -299,7 +406,8 @@ func TestAppStartupCancellationBetweenPhases(t *testing.T) {
 				run  func(context.Context) error
 			}{
 				{"после bind", app.server.Open}, {"после SDK", app.startTelemetry},
-				{"после воркера", app.module.StartWorker}, {"после HTTP", app.server.StartServe},
+				{"после воркера", app.module.StartWorker}, {"после файлового входа", app.module.StartInbox},
+				{"после HTTP", app.server.StartServe},
 			}
 			for _, step := range phases {
 				if err := step.run(ctx); err != nil {
@@ -317,6 +425,13 @@ func TestAppStartupCancellationBetweenPhases(t *testing.T) {
 			}
 			if err := app.stop(ctx); err != nil {
 				t.Fatal(err)
+			}
+			if inbox := app.module.InboxTask(); inbox != nil {
+				select {
+				case <-inbox.Done():
+				default:
+					t.Fatal("очистка частичного запуска не дождалась файлового входа")
+				}
 			}
 			assertListenerClosed(t, app)
 			if ready {

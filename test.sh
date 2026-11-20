@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Ручная проверка API и генерация синтетических данных для локального мониторинга.
-# Запуск: bash test.sh [--limits]. Требуются Linux/WSL, GNU date и Docker.
+# Ручная проверка приёма синтетических данных для локального мониторинга.
+# Запуск: bash test.sh [--limits | --inbox]. Требуются Linux/WSL, GNU date и Docker.
 if [ -z "${BASH_VERSION:-}" ]; then
   echo 'Ошибка: запустите скрипт командой bash test.sh.' >&2
   exit 2
@@ -11,20 +11,26 @@ network=${DOCKER_NETWORK:-sptr_all}
 endpoint=${EVENTS_URL:-http://user-login-metrics:8080/metrics/b/user-login/events}
 curl_image=${CURL_IMAGE:-curlimages/curl:8.12.1}
 check_limits=false
+check_inbox=false
 passed=0
 failed=0
 
 usage() {
   cat <<'HELP'
-Запуск: bash test.sh [--limits]
+Запуск: bash test.sh [--limits | --inbox]
 
 Проверяет исходы, варианты и длительности входа, частичные данные, повторы,
 конфликты, немедленный unknown и ошибки HTTP/JSON. Не перезапускает сервисы.
+Ожидания HTTP-режима устарели (например, 204 вместо 202).
 Создаёт синтетические завершения: они влияют на SLI выбранного окружения!
 
 --limits  Дополнительно проверить 413 и лимит событий одной записи (503).
           MAX_BODY_BYTES=4096 и MAX_EVENTS_PER_SCENARIO=32 должны совпадать
-          с настройками приложения. Общий лимит сценариев не заполняется.
+           с настройками приложения. Общий лимит сценариев не заполняется.
+
+--inbox   Вместо HTTP проверить файловый вход (только на тестовом стенде).
+          Нужен работающий сервис Compose user-login-metrics с каталогом входа
+          /mnt/metrics/user-login. Учитываются COMPOSE_FILE и COMPOSE_PROJECT_NAME.
 
 Окружение: DOCKER_NETWORK, EVENTS_URL, CURL_IMAGE.
 Это не полная приёмка контракта: retention, ожидание без начала, гонки,
@@ -35,18 +41,22 @@ HELP
 for arg in "$@"; do
   case "$arg" in
     --limits) check_limits=true ;;
+    --inbox) check_inbox=true ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Неизвестный аргумент: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if "$check_limits" && "$check_inbox"; then
+  echo 'Ошибка: --limits и --inbox нельзя совмещать.' >&2
+  exit 2
+fi
 
 for tool in docker date cat; do
   command -v "$tool" >/dev/null || { printf 'Не найдена команда: %s\n' "$tool" >&2; exit 2; }
 done
 [[ -r /proc/sys/kernel/random/uuid ]] || { echo 'Требуется Linux/WSL с /proc.' >&2; exit 2; }
 date -u -d '2 seconds ago' +%s >/dev/null
-docker info >/dev/null
-docker network inspect "$network" >/dev/null
 
 # Временная часть UUID соответствует моменту генерации, случайность — из ядра Linux.
 uuid7() {
@@ -59,6 +69,105 @@ uuid7() {
 timestamp() {
   date -u -d "$1" +%Y-%m-%dT%H:%M:%S.%3NZ
 }
+
+inbox_event() {
+  printf '{"event_id":"%s","scenario_id":"%s","occurred_at":"%s","source":"mis","type":"login_started"}' \
+    "$1" "$2" "$3"
+}
+
+inbox_publish() {
+  local id=$1 payload=$2
+  # Данные идут через stdin, а не в команду контейнера или вывод скрипта.
+  printf '%s' "$payload" | docker compose --profile file-inbox run --rm --no-deps -T \
+    user-login-inbox-writer sh -ec '
+      file="/mnt/metrics/user-login/$1.json"
+      dir=${file%/*}
+      if [ ! -w "$dir" ] || [ ! -x "$dir" ]; then
+        echo "Каталог файлового входа недоступен для записи. Проверьте запуск получателя, том и права." >&2
+        exit 1
+      fi
+      tmp=$(mktemp "$dir/.tmp-$1.XXXXXX")
+      cleanup() { rm -f -- "$tmp"; }
+      trap cleanup EXIT
+      cat > "$tmp"
+      mv -nT -- "$tmp" "$file"
+      if [ -e "$tmp" ]; then
+        echo "Имя уже занято, опубликованный файл не заменён." >&2
+        exit 1
+      fi
+      trap - EXIT
+      # После публикации писатель файл не меняет и сам не удаляет.
+      for i in $(seq 1 30); do
+        if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+          exit 0
+        fi
+        sleep 1
+      done
+      printf "Файл %s.json не исчез за 30 секунд.\n" "$1" >&2
+      exit 1
+    ' sh "$id"
+}
+
+inbox_log_has() {
+  local logs=$1 key=$2 value=$3 reason=$4 line
+  while IFS= read -r line; do
+    if [[ "$line" == *"\"$key\":\"$value\""* && "$line" == *"\"reason\":\"$reason\""* ]]; then
+      return 0
+    fi
+  done <<< "$logs"
+  return 1
+}
+
+check_file_inbox() {
+  local container since sid valid malformed expired conflict at logs
+  container=$(docker compose ps --status running -q user-login-metrics)
+  if [[ -z "$container" || "$container" == *$'\n'* ]]; then
+    echo 'Нужен один работающий сервис user-login-metrics в выбранном Compose-проекте.' >&2
+    return 1
+  fi
+
+  echo 'Файловый вход: синтетический сценарий; запускайте только на тестовом стенде.'
+  since=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+  sid=$(uuid7)
+  valid=$(uuid7)
+  malformed=$(uuid7)
+  expired=$(uuid7)
+  conflict=$(uuid7)
+  at=$(timestamp '2 seconds ago')
+  inbox_publish "$valid" "$(inbox_event "$valid" "$sid" "$at")"
+  inbox_publish "$malformed" '{'
+  # Файл создан сейчас, но событие по occurred_at старше 30 минут (BR-37).
+  inbox_publish "$expired" "$(inbox_event "$expired" "$(uuid7)" "$(timestamp '31 minutes ago')")"
+  # Второе корректно закодированное начало с другим временем: конфликт доказывает,
+  # что воркер получил и сохранил первое начало, а не просто что исчез его файл.
+  inbox_publish "$conflict" "$(inbox_event "$conflict" "$sid" "$(timestamp "$at - 1 second")")"
+
+  local i
+  for ((i = 0; i < 10; i++)); do
+    if ! logs=$(docker logs --since "$since" "$container" 2>&1); then
+      echo 'Не удалось прочитать логи файлового входа.' >&2
+      return 1
+    fi
+    if inbox_log_has "$logs" event_id "$conflict" event_conflict &&
+      inbox_log_has "$logs" file "$malformed.json" invalid_content &&
+      inbox_log_has "$logs" file "$expired.json" invalid_content; then
+      echo 'OK: все публикации исчезли; воркер обработал валидное начало.'
+      echo 'OK: битый JSON и событие старше 30 минут по occurred_at отклонены.'
+      return 0
+    fi
+    sleep 1
+  done
+  echo 'Файлы исчезли, но нет всех ожидаемых свидетельств обработки и отклонения в логах.' >&2
+  return 1
+}
+
+if "$check_inbox"; then
+  check_file_inbox
+  exit
+fi
+
+docker info >/dev/null
+docker network inspect "$network" >/dev/null
 
 event() {
   local scenario=$1 type=$2 source=$3 at=$4 mode=${5:-} id=${6:-}

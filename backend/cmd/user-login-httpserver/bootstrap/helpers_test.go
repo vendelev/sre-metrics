@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,7 @@ func actualConfig(t *testing.T, r *oteltest.Receiver) (*userloginconfig.Config, 
 		"service.instance.id=service-test-instance,host.name=node-test,deployment.environment.name=test",
 	)
 	cfg := userloginconfig.Default()
+	cfg.Inbox.Dir = filepath.Join(t.TempDir(), "inbox")
 	settings := config.Default()
 	settings.Addr = "127.0.0.1:0"
 	settings.ReadHeaderTimeout = 50 * time.Millisecond

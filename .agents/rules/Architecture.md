@@ -253,9 +253,14 @@ patient/internal/
 - **http/controller**: HTTP контроллеры для обработки REST запросов.
 - **http/middleware**: Middleware компоненты.
 - **console**: Крон-скрипты, демоны, консольные команды.
-- **listener**: Открытие каналов и подписка на доменные события.
-- **console/responder**, **listener/responder**: Формирование специального контента из готовых данных:
-  email, Excel, PDF, сообщения в Telegram. Шаблоны располагаются в подкаталоге `template` соответствующего Responder.
+- **listener**: Обрабатывает события и данные, которые ему передаёт механизм синхронной и асинхронной доставки:
+
+  - шина,
+  - очередь,
+  - файловый приёмник.
+
+- **responder**: Общий пакет слоя Presentation для формирования специального контента из готовых данных:
+  email, Excel, PDF, сообщений в Telegram. Шаблоны располагаются в подкаталоге `template` соответствующего Responder.
 
 **Пример структуры:**
 
@@ -269,16 +274,17 @@ patient/internal/
 │   │       └── auth.go
 │   ├── console/
 │   │   ├── sync_patients.go
-│   │   └── responder/
+│   ├── listener/
+│   │   └── patient_created.go
+│   ├── responder/
+│   │   ├── email/
+│   │   │   ├── patient_welcome_email.go
+│   │   │   └── template/
+│   │   │       └── welcome.html
+│   │   └── report/
 │   │       ├── create_tax_excel_report.go
 │   │       └── template/
 │   │           └── tax-report.xlsx
-│   └── listener/
-│       ├── patient_created.go
-│       └── responder/
-│           ├── patient_welcome_email.go
-│           └── template/
-│               └── welcome.html
 ```
 
 #### Формирование представления результата
@@ -290,7 +296,7 @@ Application не вызывает Responder напрямую и не получ�
 Application/UseCase
   → Domain/Event/PatientCreatedNotification
     → Presentation/Listener/PatientCreatedListener
-      → Presentation/Listener/Responder/PatientWelcomeEmail
+      → Presentation/Responder/Email/PatientWelcomeEmail
         → Template/welcome.html
       → отправитель готового письма
 ```
@@ -315,8 +321,8 @@ UseCase зависит от типа события и принятого в п�
 
 **Размещение:**
 
-- `presentation/*/responder` используется для непосредственного формирования результата консольного сценария
-  из данных, возвращённых Application. Не вводи событие только ради обычного вывода консольной команды.
+- Для непосредственного формирования результата консольной команды вызывай `presentation/responder`
+  из `presentation/console` с данными, возвращёнными Application. Не вводи событие только ради обычного вывода.
 
 ### Валидация и доверие между слоями
 

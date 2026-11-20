@@ -32,6 +32,22 @@ services:
             - all
             - default
 
+    # Используется для тестовой публикации файлов
+    user-login-inbox-writer:
+        profiles: [file-inbox]
+        image: alpine:3.20
+        user: "65532:65532"
+        command: ["true"]
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        labels:
+            - "traefik.enable=false"
+        volumes:
+            - user-login-metrics:/mnt/metrics
+        networks:
+            - all
+
     metrics-otel-collector:
         image: otel/opentelemetry-collector-contrib:0.165.0
         container_name: metrics-otel-collector

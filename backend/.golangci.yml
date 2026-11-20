@@ -175,6 +175,7 @@ linters:
                         - "github.com/google/uuid$"
                         - "github.com/go-chi/**"
                         - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain/"

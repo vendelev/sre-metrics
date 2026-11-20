@@ -74,7 +74,8 @@ func newApp(
 	if err := errors.Join(
 		// Значения вызывающего кода.
 		container.Provide(func() appconfig.Config { return process }),
-		container.Provide(func() *userloginconfig.Config { return moduleCfg }),
+		container.Provide(func() userloginconfig.Processing { return moduleCfg.Processing }),
+		container.Provide(func() userloginconfig.Inbox { return moduleCfg.Inbox }),
 		container.Provide(func() coreconfig.HTTP { return settings }),
 		container.Provide(func() *slog.Logger { return logger }),
 		container.Provide(func() clock.Clock { return domainClock }),
