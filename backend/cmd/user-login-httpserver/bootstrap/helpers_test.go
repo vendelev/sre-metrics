@@ -12,8 +12,8 @@ import (
 
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
 	"github.com/vendelev/sre-metrics/core/config"
-	"github.com/vendelev/sre-metrics/core/oteltest"
 	"github.com/vendelev/sre-metrics/pkg/clock"
+	"github.com/vendelev/sre-metrics/pkg/oteltest"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
 

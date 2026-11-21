@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vendelev/sre-metrics/pkg/oteltest"
 	collector "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/vendelev/sre-metrics/core/oteltest"
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 )
 
