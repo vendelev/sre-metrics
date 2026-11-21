@@ -2,11 +2,11 @@
   "id": null,
   "uid": "file-inbox",
   "title": "Файловый вход: диагностика",
-  "description": "Исходы приёма файлов, состояние каталога до обработки пачки и заполнение общего тома.",
+  "description": "Скорость приёма файлов, состояние каталога до обработки пачки и заполнение общего тома.",
   "tags": ["file-inbox"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {"from": "now-1h", "to": "now"},
   "templating": {
@@ -29,53 +29,27 @@
   },
   "panels": [
     {
-      "id": 1, "type": "text", "title": "Как читать показатели",
-      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 6},
-      "options": {
-        "mode": "markdown",
-        "content": "Показаны только ряды с непустыми `environment` и `node`, в том числе при выборе «Все». Пропуски не заменяются нулями.\n\nЧисло и размер файлов — максимумы по ноде, окружению и сервису (`job`): замеры старого и нового процессов не складываются. Старый ряд может удерживать максимум до исчезновения. Лаг и заполнение — максимумы по ноде и окружению.\n\nЛинии порогов справочные: правила Prometheus требуют лаг **> 120 с** в течение **5 мин** или заполнение **≥ 80%** в течение **3 мин**. Этот дашборд не создаёт алерты."
-      }
-    },
-    {
-      "id": 2, "type": "timeseries", "title": "Исходы приёма за скользящие 5 минут",
-      "description": "Оценка прироста по каждому исходу с учётом сбросов счётчиков, суммарно по выбранным нодам и окружениям. «Принято в очередь» не означает обработку или доставку. Отложенные попытки и ошибки файловых операций могут повторяться для одного файла; линии не показывают число уникальных событий.",
-      "gridPos": {"x": 0, "y": 6, "w": 24, "h": 8},
+      "id": 2, "type": "timeseries", "title": "Принято файлов в минуту",
+      "description": "Средняя скорость постановки файлов в очередь за последние 5 минут по выбранным нодам и окружениям. Это оценка, а не точное число за отдельную минуту. Постановка в очередь не подтверждает обработку или доставку метрик.",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "sum by (outcome) (increase(file_inbox_events_total{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"}[5m]))", "legendFormat": "{{outcome}}", "range": true}],
-      "fieldConfig": {
-        "defaults": {"unit": "suffix:шт.", "min": 0, "decimals": 2, "noValue": "Нет данных", "custom": {"spanNulls": false}},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "accepted"}, "properties": [{"id": "displayName", "value": "Принято в очередь"}]},
-          {"matcher": {"id": "byName", "options": "invalid_event"}, "properties": [{"id": "displayName", "value": "Невалидные публикации"}]},
-          {"matcher": {"id": "byName", "options": "retry"}, "properties": [{"id": "displayName", "value": "Отложенные попытки"}]},
-          {"matcher": {"id": "byName", "options": "io_error"}, "properties": [{"id": "displayName", "value": "Ошибки файловых операций"}]},
-          {"matcher": {"id": "byName", "options": "unlink_failed"}, "properties": [{"id": "displayName", "value": "Неудачные удаления"}]}
-        ]
-      },
+      "targets": [{"refId": "A", "expr": "60 * sum(rate(file_inbox_events_total{outcome=\"accepted\",environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"}[5m]))", "legendFormat": "Средняя скорость приёма", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "suffix:файлов/мин", "min": 0, "decimals": 2, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
     },
     {
-      "id": 3, "type": "timeseries", "title": "Число файлов в каталоге",
-      "description": "Число обычных файлов .json на момент скана до обработки пачки. По каждой ноде, окружению и сервису показан максимум, а не сумма замеров процессов.",
-      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 8},
+      "id": 3, "type": "timeseries", "title": "Файлов сейчас в каталоге",
+      "description": "Число обычных файлов .json по последнему замеру перед обработкой пачки, а не проверка каталога в реальном времени. По каждой ноде, окружению и сервису показан максимум замеров процессов.",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max by (node, environment, job) (file_inbox_files{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}} / {{job}}", "range": true}],
       "fieldConfig": {"defaults": {"unit": "suffix:шт.", "min": 0, "decimals": 0, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
     },
     {
-      "id": 4, "type": "timeseries", "title": "Логический размер файлов в каталоге",
-      "description": "Сумма размеров обычных файлов .json на момент скана до обработки пачки, не занятое место на диске. По каждой ноде, окружению и сервису показан максимум замеров процессов.",
-      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max by (node, environment, job) (file_inbox_size_bytes{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}} / {{job}}", "range": true}],
-      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
-      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
-    },
-    {
       "id": 5, "type": "timeseries", "title": "Возраст самого старого файла",
-      "description": "Лаг по времени изменения старейшего обычного файла .json на момент скана до обработки пачки, а не возраст события. Показан максимум по ноде и окружению.",
-      "gridPos": {"x": 0, "y": 22, "w": 12, "h": 8},
+      "description": "Сколько времени прошло с последнего изменения самого старого .json, который ещё был в каталоге на момент скана. Если файлов нет, возраст равен нулю. Это не возраст события внутри файла. Показан максимум по ноде и окружению.",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max by (node, environment) (file_inbox_oldest_file_age_seconds{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}}", "range": true}],
       "fieldConfig": {
@@ -89,9 +63,35 @@
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
     },
     {
+      "id": 7, "type": "timeseries", "title": "Ошибки и повторы за 5 минут",
+      "description": "Оценка числа отклонений и сбоев по выбранным нодам и окружениям. Отложенные попытки и ошибки файловых операций могут повторяться для одного файла.",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (outcome) (increase(file_inbox_events_total{outcome=~\"invalid_event|retry|io_error|unlink_failed\",environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"}[5m]))", "legendFormat": "{{outcome}}", "range": true}],
+      "fieldConfig": {
+        "defaults": {"unit": "suffix:шт.", "min": 0, "decimals": 2, "noValue": "Нет данных", "custom": {"spanNulls": false}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "invalid_event"}, "properties": [{"id": "displayName", "value": "Невалидные публикации"}]},
+          {"matcher": {"id": "byName", "options": "retry"}, "properties": [{"id": "displayName", "value": "Отложенные попытки"}]},
+          {"matcher": {"id": "byName", "options": "io_error"}, "properties": [{"id": "displayName", "value": "Ошибки файловых операций"}]},
+          {"matcher": {"id": "byName", "options": "unlink_failed"}, "properties": [{"id": "displayName", "value": "Неудачные удаления"}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Логический размер файлов в каталоге",
+      "description": "Сумма размеров обычных файлов .json на момент скана до обработки пачки, не занятое место на диске. По каждой ноде, окружению и сервису показан максимум замеров процессов.",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (node, environment, job) (file_inbox_size_bytes{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}} / {{job}}", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
       "id": 6, "type": "timeseries", "title": "Заполнение общего тома",
       "description": "Доля занятых блоков всей файловой системы, включая временные файлы и соседние каталоги, не доля занятых inode. Повторные замеры тома не складываются: показан максимум по ноде и окружению.",
-      "gridPos": {"x": 12, "y": 22, "w": 12, "h": 8},
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max by (node, environment) (file_inbox_volume_usage_ratio{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}}", "range": true}],
       "fieldConfig": {
@@ -103,6 +103,14 @@
         "overrides": []
       },
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 1, "type": "text", "title": "Как читать показатели",
+      "gridPos": {"x": 0, "y": 24, "w": 24, "h": 7},
+      "options": {
+        "mode": "markdown",
+        "content": "Скорость приёма — среднее за последние 5 минут в файлах в минуту. Число файлов в каталоге — замер перед обработкой пачки; если входящие файлы обрабатываются быстро, этот показатель может оставаться нулевым даже при ненулевой скорости приёма.\n\nПоказаны только ряды с непустыми `environment` и `node`. Пропуски не заменяются нулями. Число и размер файлов — максимумы по ноде, окружению и сервису (`job`); возраст и заполнение — по ноде и окружению.\n\nЛинии порогов справочные: правила Prometheus требуют возраст **> 120 с** в течение **5 мин** или заполнение **≥ 80%** в течение **3 мин**. Этот дашборд не создаёт алерты."
+      }
     }
   ]
 }

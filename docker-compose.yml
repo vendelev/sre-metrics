@@ -53,14 +53,7 @@ services:
         container_name: metrics-otel-collector
         restart: unless-stopped
         labels:
-            - "traefik.enable=true"
-            - "traefik.docker.network=sptr_all"
-            - "traefik.http.routers.otel-traces.rule=Host(`${ENTERPRISE_NAME}.test`) && Path(`/otel/v1/traces`)"
-            - "traefik.http.routers.otel-traces.entrypoints=web"
-            - "traefik.http.routers.otel-traces.priority=100"
-            - "traefik.http.middlewares.otel-traces-rewrite.replacepath.path=/v1/traces"
-            - "traefik.http.routers.otel-traces.middlewares=otel-traces-rewrite"
-            - "traefik.http.services.otel-traces.loadbalancer.server.port=4318"
+            - "traefik.enable=false"
         command:
             - --config=/etc/otelcol-contrib/config.yaml
             - --config=/etc/otelcol-contrib/local.yaml

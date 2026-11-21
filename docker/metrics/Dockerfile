@@ -1,10 +1,8 @@
 FROM golang:1.27.3-alpine AS build
+
 WORKDIR /src
-COPY backend/go.mod backend/go.sum ./
-COPY backend/core/ ./core/
-COPY backend/pkg/ ./pkg/
-COPY backend/user-login/ ./user-login/
-COPY backend/cmd/ ./cmd/
+COPY backend/ ./
+
 RUN CGO_ENABLED=0 go build -trimpath -o /out/user-login ./cmd/user-login-httpserver
 
 FROM scratch
