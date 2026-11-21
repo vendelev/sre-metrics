@@ -65,8 +65,8 @@ HTTP-контракт проверяется через `httptest`; обычны
 Объединённое покрытие учитывает код, вызываемый тестами других пакетов:
 
 ```bash
-go test -race -coverpkg=./... -coverprofile=/tmp/opencode/metrics-coverage.out ./...
-go tool cover -func=/tmp/opencode/metrics-coverage.out
+go -C backend test -race -coverpkg=./... -coverprofile=/tmp/opencode/metrics-coverage.out ./...
+go -C backend tool cover -func=/tmp/opencode/metrics-coverage.out
 golines --base-formatter=goimports -m 120 --dry-run .
 git diff --check
 ```
@@ -205,7 +205,7 @@ bash test.sh --inbox
 обновляются `../backend/go.mod`, Go-импорты и пути в [.golangci.yml](../backend/.golangci.yml).
 
 При добавлении сервиса следуйте
-[правилам его размещения и изоляции](../.agents/rules/Architecture.md#статус-и-границы-сервисов).
+[правилам его размещения и изоляции](../.agents/rules/Architecture.md#структура-директорий-в-проекте).
 Дополните каталог модулей в корневом README, команды сборки в Makefile
 и правила импортов в `../backend/.golangci.yml`.
 

@@ -15,7 +15,6 @@ type rootHandlerIn struct {
 }
 
 // rootHandler адаптирует группу маршрутов DI к generic-конструктору
-// httproute.NewRouter. core получает только этот результат и не знает модули.
 func rootHandler(in rootHandlerIn) (http.Handler, error) {
 	return httproute.NewRouter(in.Routes)
 }

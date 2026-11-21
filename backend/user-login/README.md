@@ -35,7 +35,7 @@ OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` п
 `ManualReader` используется только в изолированных тестах.
 Собственные memory-агрегаты и `LoginObserver.Snapshot()` удалены.
 [Обработка](internal/application/usecase/login_observer.go) ожидает проверку входных данных
-и возраста вызывающим кодом. [Controller](internal/presentation/http/controller/controller.go)
+и возраста вызывающим кодом. [Controller](internal/presentation/http/controller/login_event.go)
 разбирает транспортное представление и проверяет возраст;
 [очередь приёма](internal/infrastructure/queue/event_queue.go) неблокирующе принимает событие.
 [Воркер](internal/infrastructure/worker/worker.go) получает готовый канал чтения
@@ -43,7 +43,7 @@ OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` п
 `Process` и `Maintain`, пишет безопасные логи отказов и отрицательной длительности.
 
 HTTP-вход собирается в [routeOf](bootstrap/route.go): bootstrap модуля создаёт
-[Controller](internal/presentation/http/controller/controller.go), передаёт ему готовую
+[Controller](internal/presentation/http/controller/login_event.go), передаёт ему готовую
 операцию `accept`, логгер и часы, регистрирует chi-маршруты и возвращает handler
 через [Module.Handler](bootstrap/runtime.go). [rootHandler](../cmd/user-login-httpserver/bootstrap/route.go)
 приложения агрегирует маршруты из DI-группы через [httproute.NewRouter](../pkg/httproute/router.go)

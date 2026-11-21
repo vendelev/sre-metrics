@@ -35,7 +35,7 @@ flowchart LR
 
 ## 2. Как принимается HTTP-запрос
 
-Код: [controller.go](../backend/user-login/internal/presentation/http/controller/controller.go),
+Код: [login_event.go](../backend/user-login/internal/presentation/http/controller/login_event.go),
 [event.go](../backend/user-login/internal/application/factory/event.go),
 [event_queue.go](../backend/user-login/internal/infrastructure/queue/event_queue.go). Регистрирует
 маршруты [bootstrap](../backend/user-login/bootstrap/route.go).

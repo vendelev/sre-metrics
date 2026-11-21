@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 FORMATS = FormatChecker()
 
 
-@FORMATS.checks("event-time")
+@FORMATS.checks("queue-time")
 def event_time(value):
     # Как time.Parse в сервисе: разделитель миллисекунд — точка или запятая.
     return not isinstance(value, str) or FORMATS.conforms(value.replace(",", "."), "date-time")

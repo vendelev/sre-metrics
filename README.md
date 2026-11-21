@@ -26,7 +26,9 @@
 ## Разработка и документация
 
 - [Окружение, сборка и проверки](docs/development.md).
+- [Как собираются метрики входа: карта кода от события до Grafana](docs/metrics-collection.md).
 - [Файловый вход событий user-login](docs/file-inbox.md).
+- [Асинхронный приём событий](docs/async-ingest.md).
 - [Пример переменных окружения](.env.example) — скопируйте в `.env` для Compose.
 - [Документация Go-пакетов на pkg.go.dev](https://pkg.go.dev/github.com/vendelev/sre-metrics).
 - [Локальный интеграционный стенд: Compose, Collector, Prometheus и Grafana](docker/otel-collector/README.md).
