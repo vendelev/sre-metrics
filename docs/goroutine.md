@@ -1,7 +1,7 @@
 # Конкурентность и горутины user-login
 
-Запуск обслуживают две фоновые задачи: задача Serve, принадлежащая runtime core,
-и один воркер модуля. Отдельной задачи обслуживания нет: события и тики
+Запуск обслуживают задача Serve приложения, файловый вход и один воркер модуля.
+Отдельной задачи обслуживания нет: события и тики
 обрабатываются одним циклом. Асинхронный путь события описан в
 [приёме событий](async-ingest.md).
 
@@ -10,14 +10,14 @@
 Задачу воркера запускает [`Module.StartWorker`](../backend/user-login/bootstrap/runtime.go):
 операция выполняется в горутине, результат публикует [`Task.Complete`](../backend/pkg/task/task.go).
 Ошибка дополнительно неблокирующе сигнализирует в `Module.Failed`. Задачей Serve
-владеет [runtime core](../backend/core/bootstrap/server.go): `StartServe` запускает
-горутину, ошибка сигнализируется в `Server.Failed`, результат публикуется `Task.Complete`.
+владеет [runtime приложения](../backend/cmd/user-login-httpserver/bootstrap/runtime.go):
+`startServe` запускает горутину и сигнализирует об ошибке, результат публикуется `Task.Complete`.
 Результат читается только после закрытия `Done`; истёкший бюджет
 не позволяет дожидаться произвольную Go-функцию бесконечно.
 
 | Задача | Владелец запуска | Назначение и завершение |
 |---|---|---|
-| задача Serve | [runtime приложения](../backend/cmd/user-login-httpserver/bootstrap/runtime.go) через [`StartServe`](../backend/core/bootstrap/server.go) | Выполняет `http.Server.Serve`; при закрытии принадлежащего core listener ожидаемые ошибки закрытия нормализуются в успех |
+| задача Serve | [runtime приложения](../backend/cmd/user-login-httpserver/bootstrap/runtime.go) через `startServe` | Выполняет `http.Server.Serve`; при закрытии listener владельцем ожидаемые ошибки закрытия нормализуются в успех |
 | `workerTask` | [`Module.StartWorker`](../backend/user-login/bootstrap/runtime.go) | Последовательно выполняет `Process` и `Maintain`; закрытая очередь дочитывается до конца, принудительная отмена прекращает планирование |
 
 Главный [`run`](../backend/cmd/user-login-httpserver/bootstrap/runtime.go) ждёт отмены
@@ -33,7 +33,7 @@
 
 ```mermaid
 flowchart LR
-    Serve["Serve (runtime core)"] --> Conn["HTTP-соединения"]
+    Serve["Serve (runtime приложения)"] --> Conn["HTTP-соединения"]
     Conn --> HTTP["Разбор и проверка возраста"]
     HTTP --> Queue["EventQueue: Enqueue"]
     Queue --> Worker["workerTask: Process / Maintain"]
@@ -60,7 +60,7 @@ HTTP-горутины не обращаются к состоянию сцена
 Сборщик SDK работает только с накопленными измерениями, без доступа к сценариям.
 
 Регистрация измерений синхронна и не выполняет сеть. Экспорт независимо организует
-[`Pipeline`](../backend/core/internal/infrastructure/otel/pipeline.go) core с одним
+[`Pipeline`](../backend/pkg/otlpmetrics/internal/infrastructure/otel/pipeline.go) с одним
 `PeriodicReader`: SDK собирает накопленные данные и вызывает OTLP/HTTP-экспортёр.
 Это не утверждение о точном числе всех внутренних горутин SDK, HTTP-клиента или runtime.
 
@@ -73,7 +73,7 @@ HTTP-горутины не обращаются к состоянию сцена
 2. Выполняет HTTP Shutdown, чтобы активные запросы завершили постановку.
 3. Закрывает очередь для новых постановок; уже принятые события остаются для drain.
 4. Ждёт задачу Serve и обработки остатка очереди воркером.
-5. Передаёт оставшееся время [`Metrics.Shutdown`](../backend/core/bootstrap/metrics.go)
+5. Передаёт оставшееся время [`Pipeline.Shutdown`](../backend/pkg/otlpmetrics/api/pipeline.go)
    для финального экспорта и очистки.
 
 По истечении общего бюджета `context.AfterFunc` отменяет воркер. Следующие события

@@ -77,20 +77,69 @@ linters:
                 - hugeParam
         depguard:
             rules:
+                fileinbox-api:
+                    files:
+                        - "${base-path}/pkg/fileinbox/api/*.go"
+                        - "${base-path}/pkg/fileinbox/api/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "go.opentelemetry.io/otel/metric$"
+                fileinbox-config:
+                    files:
+                        - "${base-path}/pkg/fileinbox/config/*.go"
+                        - "${base-path}/pkg/fileinbox/config/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                fileinbox-domain:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/domain/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/domain/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                fileinbox-application:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/application/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/application/**/*.go"
+                        - "!${base-path}/pkg/fileinbox/internal/application/*_test.go"
+                        - "!${base-path}/pkg/fileinbox/internal/application/**/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/api$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/"
+                fileinbox-presentation:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/presentation/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/presentation/**/*.go"
+                        - "!${base-path}/pkg/fileinbox/internal/presentation/*_test.go"
+                        - "!${base-path}/pkg/fileinbox/internal/presentation/**/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/fsnotify/fsnotify$"
+                        - "go.opentelemetry.io/otel/metric$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/infrastructure/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/presentation/"
                 app-isolation:
                     files:
                         - "${base-path}/cmd/*.go"
                         - "${base-path}/cmd/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты pkg."
+                          desc: "bootstrap приложения соединяет user-login и общие пакеты pkg через публичные API."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/"
-                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
-                        - "github.com/vendelev/sre-metrics/core/config$"
-                        - "github.com/vendelev/sre-metrics/core/oteltest$"
                         - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/pkg/"
@@ -101,7 +150,7 @@ linters:
                         - "${base-path}/user-login/bootstrap/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap модуля не зависит от core и cmd: приложение соединяет модули через публичные API."
+                          desc: "bootstrap модуля не зависит от cmd: приложение соединяет компоненты через публичные API."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
@@ -113,8 +162,6 @@ linters:
                         - "${base-path}/user-login/internal/*.go"
                         - "${base-path}/user-login/internal/**/*.go"
                     deny:
-                        - pkg: "github.com/vendelev/sre-metrics/core"
-                          desc: "внутренние слои user-login не зависят от core: публичную сборку использует только корень модуля."
                         - pkg: "github.com/vendelev/sre-metrics/"
                           desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты pkg."
                     allow:
@@ -123,17 +170,15 @@ linters:
                         - "github.com/vendelev/sre-metrics/user-login/"
                         - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
-                core-isolation:
+                otlpmetrics-isolation:
                     files:
-                        - "${base-path}/core/*.go"
-                        - "${base-path}/core/**/*.go"
+                        - "${base-path}/pkg/otlpmetrics/*.go"
+                        - "${base-path}/pkg/otlpmetrics/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "core не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
+                          desc: "otlpmetrics не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
                     allow:
                         - "$gostd"
-                        - "github.com/vendelev/sre-metrics/core$"
-                        - "github.com/vendelev/sre-metrics/core/"
                         - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 domain:
@@ -175,6 +220,7 @@ linters:
                         - "github.com/google/uuid$"
                         - "github.com/go-chi/**"
                         - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/api$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain/"

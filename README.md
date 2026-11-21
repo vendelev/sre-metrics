@@ -8,14 +8,25 @@
 
 | Модуль                                  | Назначение                     | Статус                                                    |
 |-----------------------------------------|--------------------------------|-----------------------------------------------------------|
-| [user-login](backend/user-login/README.md) | Измерение сценария входа в МИС | Работают асинхронный HTTP-приём, очередь, SDK и OTLP/HTTP-экспорт с управляемым завершением; живая интеграция Collector/Prometheus не принята |
-| [core](backend/core/README.md)          | Общий HTTP-сервер и OTel-pipeline процесса | Работают HTTP-компонент и OTel-pipeline с однократным Shutdown и сборкой на dig; используется user-login |
+| [user-login](backend/user-login/README.md) | Измерение сценария входа в МИС | Работают HTTP- и файловый входы с общей очередью и OTLP/HTTP-экспорт; интеграция во внешнем pipeline не принята |
 
 Сборщик метрик создания пациента планируется отдельно; его кода в проекте пока нет.
+
+## Общие пакеты
+
+| Пакет | Назначение |
+| --- | --- |
+| [clock](backend/pkg/clock/) | Контракт источника времени и реализация системных часов. |
+| [fileinbox](backend/pkg/fileinbox/README.md) | Сканирование каталога файлового входа, приём и диагностика публикаций. |
+| [httproute](backend/pkg/httproute/) | Сборка общего HTTP-маршрутизатора из маршрутов модулей с проверкой пересечения префиксов. |
+| [httpserver](backend/pkg/httpserver/README.md) | Общий HTTP-сервер с явным управлением жизненным циклом. |
+| [otlpmetrics](backend/pkg/otlpmetrics/README.md) | Общий OTLP/HTTP-pipeline метрик с явным управлением жизненным циклом. |
+| [task](backend/pkg/task/) | Передача сигнала завершения и результата фоновой задачи её владельцу; запуск горутины остаётся на стороне владельца. |
 
 ## Разработка и документация
 
 - [Окружение, сборка и проверки](docs/development.md).
+- [Файловый вход событий user-login](docs/file-inbox.md).
 - [Пример переменных окружения](.env.example) — скопируйте в `.env` для Compose.
 - [Документация Go-пакетов на pkg.go.dev](https://pkg.go.dev/github.com/vendelev/sre-metrics).
 - [Локальный интеграционный стенд: Compose, Collector, Prometheus и Grafana](docker/otel-collector/README.md).

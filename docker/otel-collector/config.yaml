@@ -43,8 +43,6 @@ processors:
 
 connectors:
   spanmetrics:
-    # Только префикс метрик спанов, не подключение к SigNoz.
-    namespace: signoz
     histogram:
       explicit:
         buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s]

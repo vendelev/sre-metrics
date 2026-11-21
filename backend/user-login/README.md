@@ -11,12 +11,14 @@
 Работают асинхронный HTTP-приём `POST /metrics/b/user-login/events` через ограниченную очередь в памяти,
 последовательная предметная обработка, локальное накопление
 Counter и Histogram в OpenTelemetry Go SDK `v1.47.0`, периодическое обслуживание
-сценариев и штатная остановка. Компоненты собираются контейнером зависимостей dig
+сценариев и штатная остановка. Файловый вход запускается вместе с HTTP и использует
+ту же очередь. Бинарник работает на Linux; локальная разработка на Windows — через WSL.
+Компоненты собираются контейнером зависимостей dig
 через [bootstrap.Provide](bootstrap/app.go); контейнер только собирает объекты,
 фазы модуля задаёт [Module](bootstrap/runtime.go) (разделение bootstrap
 приложения и модуля, 2026-11-14), их координацию выполняет
 [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/app.go) рядом с
-общим модулем [core](../core/README.md).
+общим пакетом [otlpmetrics](../pkg/otlpmetrics/README.md).
 OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` подключён к реальному запуску:
 `PeriodicReader` периодически отправляет cumulative-метрики; финальный экспорт выполняется
 штатным shutdown reader на best effort — с оставшимся временем общего бюджета остановки.
@@ -45,7 +47,7 @@ HTTP-вход собирается в [routeOf](bootstrap/route.go): bootstrap �
 операцию `accept`, логгер и часы, регистрирует chi-маршруты и возвращает handler
 через [Module.Handler](bootstrap/runtime.go). [rootHandler](../cmd/user-login-httpserver/bootstrap/route.go)
 приложения агрегирует маршруты из DI-группы через [httproute.NewRouter](../pkg/httproute/router.go)
-и передаёт core единый `http.Handler`;
+и передаёт HTTP-серверу единый `http.Handler`;
 для текущего одиночного приложения префикс `/` сохраняет внешний путь `/metrics/b/user-login/events`.
 Controller не имеет доступа к состоянию сценариев.
 Ответ `202` без тела подтверждает постановку, но не обработку или доставку метрик;
@@ -59,6 +61,8 @@ Controller не имеет доступа к состоянию сценарие
 Реализация отправляющей стороны не означает приёмку всей задачи 08.
 Схема запроса находится в
 [OpenAPI](../../docs/specs/login-observability.openapi.yml).
+Те же события можно передать без HTTP через [файловый вход](../../docs/file-inbox.md),
+который проверяет публикации перед постановкой в общую очередь.
 
 ## Устройство и запуск
 
@@ -78,8 +82,8 @@ Counter и Histogram могут отразить одну операцию в с
 Сборка и порядок операций модуля — в [bootstrap](bootstrap/app.go), фазы
 задач и drain — в [Module](bootstrap/runtime.go), координация приложения и
 общий бюджет остановки — в [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/app.go),
-HTTP-сервер и OTel-pipeline —
-в общем модуле [core](../core/README.md),
+HTTP-сервер — в [httpserver](../pkg/httpserver/README.md), OTel-pipeline —
+в общем пакете [otlpmetrics](../pkg/otlpmetrics/README.md),
 очередь приёма — в [event_queue.go](internal/infrastructure/queue/event_queue.go), обработка и периодическое обслуживание —
 в [worker](internal/infrastructure/worker/worker.go). Только воркер вызывает один LoginObserver и изменяет
 одно хранилище. В memory нет мьютекса, транзакционной обёртки или копирования сценариев:
@@ -94,10 +98,12 @@ SIGINT/SIGTERM; при ошибке запуска или работы проц�
 называется `user-login-metrics` и собирается через [docker/metrics/Dockerfile](../../docker/metrics/Dockerfile).
 API доступен доверенным отправителям как `http://user-login-metrics:8080/metrics/b/user-login/events`, без host-порта и маршрута Traefik.
 
-После сборки для ручного запуска на хосте явно ограничьте адрес loopback:
+После сборки для ручного запуска на хосте ограничьте адрес loopback и укажите
+доступный для записи каталог файлового входа:
 
 ```bash
 CORE_HTTP_LISTEN_ADDR=127.0.0.1:8080 \
+USER_LOGIN_INBOX_DIR="$(mktemp -d)" \
 OTEL_SERVICE_NAME=mis-login-observability \
 OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
 OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-login-server
@@ -112,6 +118,7 @@ OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics ./bin/user-
 ```bash
 docker network create --internal metrics-local
 docker run --rm --name user-login --network metrics-local \
+  --tmpfs /mnt/metrics:rw,size=256m,mode=0777 \
   -e OTEL_SERVICE_NAME=mis-login-observability \
   -e OTEL_RESOURCE_ATTRIBUTES=service.namespace=sptr,service.instance.id=user-login-local-1,host.name=node-1,deployment.environment.name=development \
   -e OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://metrics-otel-collector:4318/v1/metrics \
@@ -121,11 +128,16 @@ docker stop --time 12 user-login
 docker network rm metrics-local
 ```
 
+Этот `--tmpfs` доступен только получателю. Для публикации из другого контейнера
+используйте [общий том](../../docs/file-inbox.md).
+
 ### Настройки
 
-[Конфигурация модуля](config/config.go) и [конфигурация ядра core](../core/config/http.go)
+[Конфигурация модуля](config/config.go) и [конфигурация HTTP-сервера](../pkg/httpserver/config/http.go)
 загружаются bootstrap'ом приложения по одному разу при старте; разбор env по тегам полей выполняет `caarlos0/env/v11`,
-предметные ограничения — `Config.Validate` и `HTTP.Validate`. Общий бюджет остановки процесса
+предметные ограничения — `Config.Validate` и `HTTP.Validate`.
+Компоненты модуля получают отдельно [настройки обработки](config/processing.go) или
+[настройки файлового входа](config/inbox.go). Общий бюджет остановки процесса
 загружается в [конфигурации приложения](../cmd/user-login-httpserver/config/config.go).
 Настройки экспорта читает SDK
 из стандартных `OTEL_*`. Экспорт запускается после bind,
@@ -134,7 +146,7 @@ docker network rm metrics-local
 не мешает приёму событий, но диагностируется, включая ошибку последнего экспорта при остановке.
 Пустые настройки сохраняют умолчания. Нода и окружение задаются только
 через `OTEL_RESOURCE_ATTRIBUTES`. Формат адреса прослушивания
-проверяется при открытии listener core, а не при загрузке конфигурации.
+проверяется при открытии HTTP listener, а не при загрузке конфигурации.
 Длительности `USER_LOGIN_*` и `CORE_HTTP_*` задаются с единицей: `500ms`, `2s`, `1m`;
 стандартные OTEL-интервалы и timeout — целыми миллисекундами без суффикса.
 
@@ -143,7 +155,7 @@ docker network rm metrics-local
 сервис получает файл через `env_file`. Сам Go-процесс `.env` не читает;
 при запуске бинарника передавайте настройки через окружение процесса.
 
-Настройки ядра core (слушающий адрес и тайм-ауты `net/http`):
+Настройки HTTP-сервера (слушающий адрес и тайм-ауты `net/http`):
 
 | Env                              | Умолчание | Назначение                                                                |
 |----------------------------------|-----------|---------------------------------------------------------------------------|
@@ -163,6 +175,16 @@ docker network rm metrics-local
 | `USER_LOGIN_MAINTENANCE_INTERVAL`     | `1s`      | Период обслуживания                                                       |
 | `USER_LOGIN_SHUTDOWN_TIMEOUT`         | `10s`     | Единый бюджет остановки процесса; имя — временный внешний контракт, загружается [конфигурацией приложения](../cmd/user-login-httpserver/config/config.go) |
 
+Настройки файлового входа:
+
+| Env | Умолчание | Назначение |
+| --- | --- | --- |
+| `USER_LOGIN_INBOX_DIR` | `/mnt/metrics/user-login` | Каталог файлового входа; пустое значение сохраняет умолчание |
+| `USER_LOGIN_INBOX_SCAN_INTERVAL` | `1s` | Период повторного сканирования |
+| `USER_LOGIN_INBOX_MAX_FILES_PER_SCAN` | `256` | Лимит файлов на один скан |
+| `USER_LOGIN_INBOX_MAX_FILE_BYTES` | `16384` | Максимальный размер публикации в байтах |
+| `USER_LOGIN_INBOX_MAX_ATTEMPTS` | `3` | Лимит ошибок чтения и отдельный лимит попыток удаления файла |
+
 Экспорт настраивается через `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
 `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`, `OTEL_METRIC_EXPORT_INTERVAL` и
 `OTEL_METRIC_EXPORT_TIMEOUT`; значения для стенда приведены в `.env.example`.
@@ -173,12 +195,12 @@ timeout reader `30000` мс и HTTP timeout `10000` мс. Общие `OTEL_EXPOR
 PEM-файлу; в контейнере файл нужно отдельно смонтировать. Клиент и TLS настраивает SDK.
 
 Все числовые значения положительны. Интервал обслуживания не превышает `1m`;
-тайм-аут заголовков не превышает тайм-аут чтения (проверка ядра core).
+тайм-аут заголовков не превышает тайм-аут чтения (проверка HTTP-конфигурации).
 Перекрёстная формула бюджета остановки
 относительно HTTP-тайм-аутов не проверяется: остановка короче HTTP-тайм-аутов допустима
 и завершается принудительным закрытием соединений. Серверные timeout не меняют клиентский
 timeout 1 с из BR-22 и не прерывают произвольную выполняющуюся Go-функцию.
-Config модуля и ядра не разбирают и не проверяют `OTEL_*`: их обработка и умолчания
+Config модуля и HTTP-сервера не разбирают и не проверяют `OTEL_*`: их обработка и умолчания
 принадлежат SDK. HTTPS использует проверку сертификатов. Отдельных `USER_LOGIN_*`
 для экспорта больше нет.
 
@@ -197,8 +219,8 @@ exemplars и View гистограммы задаются кодом.
 Окружение процесса не изменяется; глобальные provider, логгер и обработчик ошибок
 не подменяются. Конкурентное изменение env не поддерживается.
 
-Resource и pipeline процесса владеет core: [bootstrap.Metrics](../core/bootstrap/metrics.go)
-после bind создаёт provider с одним `PeriodicReader` и переданными View модуля,
+Resource и pipeline процесса принадлежат [otlpmetrics](../pkg/otlpmetrics/README.md):
+после bind пакет создаёт provider с одним `PeriodicReader` и переданными View модуля,
 без production-`ManualReader`. [Prepare](internal/infrastructure/otel/recorder.go)
 возвращает Recorder без provider и инструментов; [Activate](internal/infrastructure/otel/recorder.go)
 регистрирует инструменты и шесть нулевых рядов в meter общего provider после
@@ -218,10 +240,13 @@ SDK v1.47.0 не гарантирует немедленное закрытие 
 [bootstrap.Provide](bootstrap/app.go); ошибки сборки останавливают запуск
 до открытия ресурсов. Владелец протокола запуска и остановки приложения —
 [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/runtime.go):
-координация публичных фаз core и модуля, очистка частичного запуска и общий
-бюджет остановки; фазы самой фоновой задачи — в [Module](bootstrap/runtime.go).
-Запуск: **listener → SDK/pipeline → активация инструментов модуля → воркер и HTTP →
-подтверждение готовности**. Listener сначала открывается без Serve; инструменты
+координация публичных фаз pipeline и модуля, очистка частичного запуска и общий
+бюджет остановки; фазы фоновых задач модуля — в [Module](bootstrap/runtime.go).
+Запуск: **listener → SDK/pipeline → активация инструментов модуля → воркер →
+файловый вход → HTTP Serve → подтверждение готовности**.
+Приложение ждёт доступности каталога до запуска HTTP Serve. Ошибка открытия или
+последующего чтения каталога останавливает приложение; сбой файловых уведомлений
+не мешает периодическому сканированию. Listener сначала открывается без Serve; инструменты
 и шесть нулевых рядов Counter готовы до HTTP и обслуживания. Histogram появляется
 только после настоящего наблюдения. Ошибка bind не запускает SDK. Ошибка запуска
 pipeline освобождает listener и частично созданные SDK-ресурсы: неуспешный запуск
@@ -237,14 +262,16 @@ pipeline освобождает listener и частично созданные 
 вместо исходной ошибки; отдельно восстанавливать её сервис не пытается.
 
 Остановка линейна и ограничена одним общим deadline: закрыть listener для новых
-соединений → отменить планирование обслуживания → выполнить HTTP Shutdown в пределах
-срока → запретить новые постановки в очередь и закрыть её → дождаться Serve и обработки
-остатка очереди воркером → завершить SDK. При неуспехе HTTP Shutdown соединения
+соединений → отменить планирование обслуживания и подать файловому входу сигнал
+остановки → выполнить HTTP Shutdown → запретить новые постановки в очередь и закрыть её →
+дождаться Serve, обработки остатка очереди воркером и завершения файлового входа →
+завершить SDK. Файловый вход **не закрывает очередь**: это делают воркер и идемпотентный
+`Module.CloseQueue`. При неуспехе HTTP Shutdown соединения
 закрываются принудительно. Исчерпание бюджета отменяет воркер: новые операции
 не планируются, незавершённый drain возвращает ошибку. Поздний HTTP-обработчик
 не может поставить событие после закрытия приёма.
-Результаты двух фоновых задач публикуются через каналы завершения; отдельной задачи
-HTTP Shutdown нет. `Metrics.Shutdown` core передаётся оставшееся время: reader отменяет
+Результаты фоновых задач публикуются через каналы завершения; отдельной задачи
+HTTP Shutdown нет. `Pipeline.Shutdown` передаётся оставшееся время: reader отменяет
 периодический вызов, дожидается его завершения, выполняет последний сбор/экспорт
 и завершает exporter. Даже при исчерпанном сроке команда освобождения
 передаётся: вызов shutdown с истёкшим контекстом не гарантирует ни последней отправки,
@@ -279,5 +306,7 @@ HTTP timeout задаётся через `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`; �
   проверяются тестами; переполненные внутри SDK значения не восстанавливаются.
 - Локальный OTLP/HTTP-получатель не подтверждает живую интеграцию Collector/Prometheus:
   фактические Prometheus-имена, labels и SLI во внешнем pipeline ещё не приняты.
+- Файловый вход использует временный том; исчезновение файла не различает приём
+  и отказ. См. [гарантии, требования к отправителю и диагностику](../../docs/file-inbox.md).
 - [Асинхронный приём событий](../../docs/async-ingest.md) и [конкурентность и горутины](../../docs/goroutine.md).
 - [Все модули проекта](../../README.md).

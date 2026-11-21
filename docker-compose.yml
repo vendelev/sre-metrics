@@ -1,6 +1,5 @@
 include:
     - docker-compose.grafana.yml
-    - docker-compose.signoz.yml
 
 services:
     user-login-metrics:
@@ -33,6 +32,22 @@ services:
             - all
             - default
 
+    # Используется для тестовой публикации файлов
+    user-login-inbox-writer:
+        profiles: [file-inbox]
+        image: alpine:3.20
+        user: "65532:65532"
+        command: ["true"]
+        read_only: true
+        cap_drop: [ALL]
+        security_opt: [no-new-privileges:true]
+        labels:
+            - "traefik.enable=false"
+        volumes:
+            - user-login-metrics:/mnt/metrics
+        networks:
+            - all
+
     metrics-otel-collector:
         image: otel/opentelemetry-collector-contrib:0.165.0
         container_name: metrics-otel-collector
@@ -49,7 +64,6 @@ services:
         command:
             - --config=/etc/otelcol-contrib/config.yaml
             - --config=/etc/otelcol-contrib/local.yaml
-            - --config=/etc/otelcol-contrib/signoz.yaml
         healthcheck:
             # Проверяет конфигурацию, а не готовность приёмника OTLP.
             test:
@@ -58,7 +72,6 @@ services:
                 - validate
                 - --config=/etc/otelcol-contrib/config.yaml
                 - --config=/etc/otelcol-contrib/local.yaml
-                - --config=/etc/otelcol-contrib/signoz.yaml
             interval: 30s
             timeout: 5s
             retries: 3
@@ -66,10 +79,6 @@ services:
         volumes:
             - ./docker/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
             - ./docker/otel-collector/local.yaml:/etc/otelcol-contrib/local.yaml:ro
-            - ./docker/otel-collector/signoz.yaml:/etc/otelcol-contrib/signoz.yaml:ro
-        depends_on:
-            signoz-collector:
-                condition: service_healthy
         networks:
             - all
             - default

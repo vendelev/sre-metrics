@@ -15,6 +15,7 @@ import (
 
 	"github.com/vendelev/sre-metrics/pkg/clock"
 	"github.com/vendelev/sre-metrics/pkg/task"
+	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
 	"github.com/vendelev/sre-metrics/user-login/internal/domain/contract"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
@@ -140,7 +141,19 @@ func mustModule(
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewModule(recorder, w, events, slog.New(slog.DiscardHandler), clock.RealTime{})
+	return mustModuleWithInbox(t, recorder, w, events)
+}
+
+func mustModuleWithInbox(t *testing.T, recorder *otel.Recorder, w *worker.Worker, events *queue.EventQueue) *Module {
+	t.Helper()
+	cfg := userloginconfig.Default().Inbox
+	cfg.Dir = t.TempDir()
+	logger := slog.New(slog.DiscardHandler)
+	input, err := inboxOf(cfg, events, logger, clock.RealTime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewModule(recorder, w, input, events, logger, clock.RealTime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +161,7 @@ func mustModule(
 }
 
 // Рабочая сборка не активирует инструменты и не создаёт provider: активацию
-// выполняет Start в meter запущенного pipeline core.
+// выполняет Start в meter запущенного pipeline.
 func TestModuleBuildDoesNotActivateInstruments(t *testing.T) {
 	t.Parallel()
 	recorder := otel.Prepare()
@@ -166,18 +179,15 @@ func TestModuleBuildDoesNotActivateInstruments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewModule(recorder, w, events, slog.New(slog.DiscardHandler), clock.RealTime{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	m := mustModuleWithInbox(t, recorder, w, events)
 	if m.recorder.Activated() {
 		t.Fatal("инструменты активированы при сборке")
 	}
 	if m.recorder.Reader() != nil {
 		t.Fatal("ManualReader в рабочей сборке модуля")
 	}
-	if m.WorkerTask() != nil {
-		t.Fatal("задача воркера запущена при сборке")
+	if m.WorkerTask() != nil || m.InboxTask() != nil {
+		t.Fatal("фоновая задача запущена при сборке")
 	}
 	if err := m.Start(t.Context(), nil); err == nil {
 		t.Fatal("активация без meter должна требовать запущенный pipeline")
@@ -195,14 +205,9 @@ func TestWorkerFailurePublishesTaskError(t *testing.T) {
 	if err := m.StartWorker(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	waitResult(t, m.WorkerTask().Done())
+	waitResult(t, m.Failed())
 	if !errors.Is(m.WorkerTask().Err(), cause) {
 		t.Fatalf("сбой очереди не опубликован: %v", m.WorkerTask().Err())
-	}
-	select {
-	case <-m.Failed():
-	default:
-		t.Fatal("ошибка задачи не сигнализирована приложению")
 	}
 	if err := m.queue.Enqueue(ingestEvent(2, dEvent.LoginSucceeded, time.Now())); err == nil {
 		t.Fatal("при отказе воркера приём остался открыт")
