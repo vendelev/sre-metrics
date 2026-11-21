@@ -319,13 +319,19 @@ func TestAppBlockedInboxSharesShutdownBudget(t *testing.T) {
 	release := sync.OnceFunc(func() { close(c.release) })
 	defer release()
 	c.armed.Store(true)
-	running := runActual(t, app)
+	ctx, cancel := context.WithCancel(t.Context())
+	running := &runningService{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		running.err = app.run(ctx, func(addr net.Addr) { running.address = addr })
+		close(running.done)
+	}()
+	t.Cleanup(func() { cancel(); waitSignal(t, running.done) })
+	waitSignal(t, c.entered)
 	inbox := app.module.InboxTask()
 	if inbox == nil {
 		t.Fatal("нет задачи файлового входа")
 	}
 	defer func() { release(); waitSignal(t, inbox.Done()) }()
-	waitSignal(t, c.entered)
 
 	started := time.Now()
 	err := running.stop(t)

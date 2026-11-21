@@ -1,0 +1,108 @@
+{
+  "id": null,
+  "uid": "file-inbox",
+  "title": "Файловый вход: диагностика",
+  "description": "Исходы приёма файлов, состояние каталога до обработки пачки и заполнение общего тома.",
+  "tags": ["file-inbox"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "environment", "label": "Окружение", "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values({__name__=~\"file_inbox_(events_total|files|size_bytes|oldest_file_age_seconds|volume_usage_ratio)\",environment!=\"\",node!=\"\"}, environment)", "refId": "environment"},
+        "refresh": 1, "sort": 1, "multi": true, "includeAll": true, "allValue": ".+",
+        "current": {"text": "Все", "value": "$__all"}, "options": []
+      },
+      {
+        "name": "node", "label": "Нода", "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values({__name__=~\"file_inbox_(events_total|files|size_bytes|oldest_file_age_seconds|volume_usage_ratio)\",environment=~\"${environment}\",environment!=\"\",node!=\"\"}, node)", "refId": "node"},
+        "refresh": 1, "sort": 1, "multi": true, "includeAll": true, "allValue": ".+",
+        "current": {"text": "Все", "value": "$__all"}, "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "text", "title": "Как читать показатели",
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 6},
+      "options": {
+        "mode": "markdown",
+        "content": "Показаны только ряды с непустыми `environment` и `node`, в том числе при выборе «Все». Пропуски не заменяются нулями.\n\nЧисло и размер файлов — максимумы по ноде, окружению и сервису (`job`): замеры старого и нового процессов не складываются. Старый ряд может удерживать максимум до исчезновения. Лаг и заполнение — максимумы по ноде и окружению.\n\nЛинии порогов справочные: правила Prometheus требуют лаг **> 120 с** в течение **5 мин** или заполнение **≥ 80%** в течение **3 мин**. Этот дашборд не создаёт алерты."
+      }
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Исходы приёма за скользящие 5 минут",
+      "description": "Оценка прироста по каждому исходу с учётом сбросов счётчиков, суммарно по выбранным нодам и окружениям. «Принято в очередь» не означает обработку или доставку. Отложенные попытки и ошибки файловых операций могут повторяться для одного файла; линии не показывают число уникальных событий.",
+      "gridPos": {"x": 0, "y": 6, "w": 24, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (outcome) (increase(file_inbox_events_total{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"}[5m]))", "legendFormat": "{{outcome}}", "range": true}],
+      "fieldConfig": {
+        "defaults": {"unit": "suffix:шт.", "min": 0, "decimals": 2, "noValue": "Нет данных", "custom": {"spanNulls": false}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "accepted"}, "properties": [{"id": "displayName", "value": "Принято в очередь"}]},
+          {"matcher": {"id": "byName", "options": "invalid_event"}, "properties": [{"id": "displayName", "value": "Невалидные публикации"}]},
+          {"matcher": {"id": "byName", "options": "retry"}, "properties": [{"id": "displayName", "value": "Отложенные попытки"}]},
+          {"matcher": {"id": "byName", "options": "io_error"}, "properties": [{"id": "displayName", "value": "Ошибки файловых операций"}]},
+          {"matcher": {"id": "byName", "options": "unlink_failed"}, "properties": [{"id": "displayName", "value": "Неудачные удаления"}]}
+        ]
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Число файлов в каталоге",
+      "description": "Число обычных файлов .json на момент скана до обработки пачки. По каждой ноде, окружению и сервису показан максимум, а не сумма замеров процессов.",
+      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (node, environment, job) (file_inbox_files{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}} / {{job}}", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "suffix:шт.", "min": 0, "decimals": 0, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Логический размер файлов в каталоге",
+      "description": "Сумма размеров обычных файлов .json на момент скана до обработки пачки, не занятое место на диске. По каждой ноде, окружению и сервису показан максимум замеров процессов.",
+      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (node, environment, job) (file_inbox_size_bytes{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}} / {{job}}", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0, "noValue": "Нет данных", "custom": {"spanNulls": false}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Возраст самого старого файла",
+      "description": "Лаг по времени изменения старейшего обычного файла .json на момент скана до обработки пачки, а не возраст события. Показан максимум по ноде и окружению.",
+      "gridPos": {"x": 0, "y": 22, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (node, environment) (file_inbox_oldest_file_age_seconds{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}}", "range": true}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s", "min": 0, "noValue": "Нет данных",
+          "custom": {"spanNulls": false, "thresholdsStyle": {"mode": "line"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 120}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Заполнение общего тома",
+      "description": "Доля занятых блоков всей файловой системы, включая временные файлы и соседние каталоги, не доля занятых inode. Повторные замеры тома не складываются: показан максимум по ноде и окружению.",
+      "gridPos": {"x": 12, "y": 22, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (node, environment) (file_inbox_volume_usage_ratio{environment=~\"${environment}\",node=~\"${node}\",environment!=\"\",node!=\"\"})", "legendFormat": "{{node}} / {{environment}}", "range": true}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1, "noValue": "Нет данных",
+          "custom": {"spanNulls": false, "thresholdsStyle": {"mode": "line"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.8}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    }
+  ]
+}

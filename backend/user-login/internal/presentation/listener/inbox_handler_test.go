@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vendelev/sre-metrics/pkg/fileinbox"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
@@ -44,7 +44,7 @@ func TestNewHandlerWithQueue(t *testing.T) {
 	if err := handle(contents, now); err != nil {
 		t.Fatalf("первый приём: %v", err)
 	}
-	if err := handle(contents, now); !errors.Is(err, fileinbox.ErrRetry) {
+	if err := handle(contents, now); !errors.Is(err, pkgApi.ErrRetry) {
 		t.Fatalf("полная очередь: ожидался повтор, получено %v", err)
 	}
 	select {
@@ -61,7 +61,7 @@ func TestNewHandlerWithQueue(t *testing.T) {
 		t.Fatalf("повтор после освобождения места: %v", err)
 	}
 	q.Close()
-	if err := handle(contents, now); !errors.Is(err, fileinbox.ErrRetry) {
+	if err := handle(contents, now); !errors.Is(err, pkgApi.ErrRetry) {
 		t.Fatalf("закрытая очередь: ожидался повтор, получено %v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestNewHandlerAge(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || errors.Is(err, fileinbox.ErrRetry) || called {
+			if err == nil || errors.Is(err, pkgApi.ErrRetry) || called {
 				t.Fatalf("ожидался окончательный отказ до приёма: вызов=%t, ошибка=%v", called, err)
 			}
 		})
@@ -120,7 +120,7 @@ func TestNewHandlerRejectsInvalidContentBeforeEnqueue(t *testing.T) {
 				t.Fatal("невалидное событие дошло до постановки")
 				return nil
 			})
-			if err := handle([]byte(tc.body), now); err == nil || errors.Is(err, fileinbox.ErrRetry) {
+			if err := handle([]byte(tc.body), now); err == nil || errors.Is(err, pkgApi.ErrRetry) {
 				t.Fatalf("ожидался окончательный отказ, получено %v", err)
 			}
 		})
@@ -135,13 +135,13 @@ func TestNewHandlerRejectsOtherEnqueueErrors(t *testing.T) {
 		err  error
 	}{
 		{"внутренняя ошибка приёма", dError.ErrInternal},
-		{"чужой сигнал повтора", fileinbox.ErrRetry},
+		{"чужой сигнал повтора", pkgApi.ErrRetry},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Реальная очередь не возвращает эти ошибки; задаём их на границе операции.
 			handle := listener.NewInboxHandler(func(*dEvent.Request) error { return tc.err })
-			if err := handle([]byte(eventJSON(now)), now); err == nil || errors.Is(err, fileinbox.ErrRetry) {
+			if err := handle([]byte(eventJSON(now)), now); err == nil || errors.Is(err, pkgApi.ErrRetry) {
 				t.Fatalf("ожидался окончательный отказ, получено %v", err)
 			}
 		})

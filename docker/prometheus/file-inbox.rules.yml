@@ -1,0 +1,20 @@
+# Один общий том файлового входа на пару node/environment. Для лага выбираем
+# худший каталог, для заполнения — максимум измерений одного тома, не сумму.
+# Источники без node или environment не участвуют: их нельзя привязать к тому.
+groups:
+  - name: file-inbox
+    rules:
+      - alert: FileInboxLagHigh
+        expr: max by (node, environment) (file_inbox_oldest_file_age_seconds{node!="",environment!=""}) > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Файловый вход на {{ $labels.node }} долго не разбирает очередь"
+      - alert: FileInboxVolumeUsageHigh
+        expr: max by (node, environment) (file_inbox_volume_usage_ratio{node!="",environment!=""}) >= 0.8
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Общий том файлового входа на {{ $labels.node }} заполнен на 80% или более"

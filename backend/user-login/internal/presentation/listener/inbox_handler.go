@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	pkgFileinbox "github.com/vendelev/sre-metrics/pkg/fileinbox"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
 	aFactory "github.com/vendelev/sre-metrics/user-login/internal/application/factory"
 	dError "github.com/vendelev/sre-metrics/user-login/internal/domain/error"
 	dEvent "github.com/vendelev/sre-metrics/user-login/internal/domain/event"
@@ -17,7 +17,7 @@ import (
 // NewInboxHandler создаёт обработчик содержимого одного файла. Он проверяет событие
 // на время текущей попытки и передаёт его готовой неблокирующей операции enqueue.
 // Операция должна быть ненулевой.
-func NewInboxHandler(enqueue func(*dEvent.Request) error) pkgFileinbox.Handle {
+func NewInboxHandler(enqueue func(*dEvent.Request) error) pkgApi.Handle {
 	return func(contents []byte, now time.Time) error {
 		event, err := aFactory.DecodeEvent(bytes.NewReader(contents), now)
 		if err != nil {
@@ -29,7 +29,7 @@ func NewInboxHandler(enqueue func(*dEvent.Request) error) pkgFileinbox.Handle {
 		case err == nil:
 			return nil
 		case errors.Is(err, iQueue.ErrClosed), errors.Is(err, dError.ErrOverloaded):
-			return pkgFileinbox.ErrRetry
+			return pkgApi.ErrRetry
 		default:
 			// Решение о повторе принимает адаптер, а не переданная операция.
 			return errors.New("не удалось поставить событие в очередь")

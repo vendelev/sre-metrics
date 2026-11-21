@@ -8,7 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/vendelev/sre-metrics/pkg/fileinbox"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
 	"github.com/vendelev/sre-metrics/pkg/task"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/otel"
 	"github.com/vendelev/sre-metrics/user-login/internal/infrastructure/queue"
@@ -22,7 +22,7 @@ import (
 type Module struct {
 	recorder *otel.Recorder
 	worker   *worker.Worker
-	inbox    *fileinbox.Inbox
+	inbox    pkgApi.Inbox
 	queue    *queue.EventQueue
 	handler  http.Handler
 

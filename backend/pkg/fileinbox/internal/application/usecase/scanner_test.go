@@ -1,12 +1,13 @@
 //go:build linux
 
-package fileinbox
+package usecase_test
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,7 +16,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vendelev/sre-metrics/pkg/clock"
+	pkgClock "github.com/vendelev/sre-metrics/pkg/clock"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
+	aUsecase "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/usecase"
+	iFilesystem "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/infrastructure/filesystem"
+)
+
+const (
+	fileA = "00000000-0000-4000-8000-00000000000a.json"
+	fileB = "00000000-0000-4000-8000-00000000000b.json"
+	fileC = "00000000-0000-4000-8000-00000000000c.json"
 )
 
 func TestScanFiltersEntriesAndRejectsWithoutLeakingInput(t *testing.T) {
@@ -24,14 +34,14 @@ func TestScanFiltersEntriesAndRejectsWithoutLeakingInput(t *testing.T) {
 	cfg.MaxFileBytes = 8
 	var logs bytes.Buffer
 	var handled []string
-	i := newTestInbox(t, cfg, func(contents []byte, _ time.Time) error {
+	s := newTestScanner(t, cfg, func(contents []byte, _ time.Time) error {
 		value := string(contents)
 		handled = append(handled, value)
 		if value == "PII-body" {
 			return errors.New("синтетическая ошибка PII-error: " + value)
 		}
 		return nil
-	}, &logs, clock.RealTime{})
+	}, &logs, pkgClock.RealTime{})
 
 	rejected := map[string]string{
 		fileA:                    "PII-body",
@@ -64,7 +74,7 @@ func TestScanFiltersEntriesAndRejectsWithoutLeakingInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scanDir(t, i)
+	scanDir(t, s)
 	for name := range rejected {
 		requireMissing(t, filepath.Join(cfg.Dir, name))
 	}
@@ -95,10 +105,10 @@ func TestScanOrdersByModificationTimeAndNameAndLimitsWork(t *testing.T) {
 	cfg.MaxFilesPerScan = 2
 	now := time.Unix(100, 0)
 	var handled []string
-	i := newTestInbox(t, cfg, func(contents []byte, _ time.Time) error {
+	s := newTestScanner(t, cfg, func(contents []byte, _ time.Time) error {
 		handled = append(handled, string(contents))
 		return nil
-	}, io.Discard, clock.RealTime{})
+	}, io.Discard, pkgClock.RealTime{})
 	publish(t, cfg.Dir, fileB, "b")
 	publish(t, cfg.Dir, fileA, "a")
 	publish(t, cfg.Dir, fileC, "c")
@@ -106,9 +116,9 @@ func TestScanOrdersByModificationTimeAndNameAndLimitsWork(t *testing.T) {
 	setMtime(t, filepath.Join(cfg.Dir, fileB), now)
 	setMtime(t, filepath.Join(cfg.Dir, fileC), now.Add(-time.Second))
 
-	scanDir(t, i)
+	scanDir(t, s)
 	requirePresent(t, filepath.Join(cfg.Dir, fileB))
-	scanDir(t, i)
+	scanDir(t, s)
 	if !slices.Equal(handled, []string{"c", "a", "b"}) {
 		t.Errorf("нарушен порядок обработки: %v", handled)
 	}
@@ -122,21 +132,21 @@ func TestScanRetriesWithCurrentClockBeyondAttemptBudget(t *testing.T) {
 	start := time.Unix(100, 0)
 	clk := &testClock{now: start}
 	var times []time.Time
-	i := newTestInbox(t, cfg, func(_ []byte, now time.Time) error {
+	s := newTestScanner(t, cfg, func(_ []byte, now time.Time) error {
 		times = append(times, now)
 		if now.Before(start.Add(2 * time.Second)) {
-			return fmt.Errorf("отложено: %w", ErrRetry)
+			return fmt.Errorf("отложено: %w", pkgApi.ErrRetry)
 		}
 		return nil
 	}, io.Discard, clk)
 	publish(t, cfg.Dir, fileA, "публикация")
 	path := filepath.Join(cfg.Dir, fileA)
 	for range 2 {
-		scanDir(t, i)
+		scanDir(t, s)
 		requirePresent(t, path)
 		clk.now = clk.now.Add(time.Second)
 	}
-	scanDir(t, i)
+	scanDir(t, s)
 	requireMissing(t, path)
 	want := []time.Time{start, start.Add(time.Second), start.Add(2 * time.Second)}
 	if !slices.EqualFunc(times, want, time.Time.Equal) {
@@ -154,16 +164,14 @@ func TestScanExhaustsReadAttemptsThenRemovesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	i := newTestInbox(t, cfg, func([]byte, time.Time) error {
+	s := newTestScanner(t, cfg, func([]byte, time.Time) error {
 		t.Error("нечитаемый файл передан обработчику")
 		return nil
-	}, &logs, clock.RealTime{})
-	reader := attachDiagnostics(t, i)
-	scanDir(t, i)
+	}, &logs, pkgClock.RealTime{})
+	scanDir(t, s)
 	requirePresent(t, path)
-	scanDir(t, i)
+	scanDir(t, s)
 	requireMissing(t, path)
-	assertOutcomes(t, collectDiagnostics(t, reader), map[string]int64{"io_error": 2})
 	if count := strings.Count(logs.String(), `"reason":"read_failed"`); count != cfg.MaxAttempts {
 		t.Errorf("число зарегистрированных ошибок чтения: %d", count)
 	}
@@ -176,16 +184,16 @@ func TestScanRetriesOnlyUnlinkAfterFinalRejection(t *testing.T) {
 	t.Cleanup(func() { setMode(t, cfg.Dir, 0o700) })
 	publish(t, cfg.Dir, fileA, "битая публикация")
 	calls := 0
-	i := newTestInbox(t, cfg, func([]byte, time.Time) error {
+	s := newTestScanner(t, cfg, func([]byte, time.Time) error {
 		calls++
 		setMode(t, cfg.Dir, 0o500)
 		return errors.New("синтетический отказ")
-	}, io.Discard, clock.RealTime{})
-	scanDir(t, i)
+	}, io.Discard, pkgClock.RealTime{})
+	scanDir(t, s)
 	path := filepath.Join(cfg.Dir, fileA)
 	requirePresent(t, path)
 	setMode(t, cfg.Dir, 0o700)
-	scanDir(t, i)
+	scanDir(t, s)
 	requireMissing(t, path)
 	if calls != 1 {
 		t.Errorf("отклонённая публикация передана обработчику %d раз", calls)
@@ -204,35 +212,23 @@ func TestScanExhaustsUnlinkAttemptsWithoutBlockingOtherPublications(t *testing.T
 	setMtime(t, path, time.Unix(100, 0))
 	var handled []string
 	var logs bytes.Buffer
-	i := newTestInbox(t, cfg, func(contents []byte, _ time.Time) error {
+	s := newTestScanner(t, cfg, func(contents []byte, _ time.Time) error {
 		value := string(contents)
 		handled = append(handled, value)
 		if value == "первая" {
 			setMode(t, cfg.Dir, 0o500)
 		}
 		return nil
-	}, &logs, clock.RealTime{})
-	reader := attachDiagnostics(t, i)
-
-	scanDir(t, i)
-	assertOutcomes(t, collectDiagnostics(t, reader), map[string]int64{"accepted": 1, "unlink_failed": 1})
-	scanDir(t, i)
-	assertOutcomes(t, collectDiagnostics(t, reader), map[string]int64{"accepted": 1, "unlink_failed": 2})
+	}, &logs, pkgClock.RealTime{})
+	scanDir(t, s)
+	scanDir(t, s)
 	setMode(t, cfg.Dir, 0o700)
-	scanDir(t, i)
-	m := collectDiagnostics(t, reader)
-	assertOutcomes(t, m, map[string]int64{"accepted": 2, "unlink_failed": 2})
-	assertDirectoryTotals(t, m, 2, int64(len("первая")+len("следующая")))
-	scanDir(t, i)
-	m = collectDiagnostics(t, reader)
-	assertDirectoryTotals(t, m, 1, int64(len("первая")))
-	if age := gaugeValue[float64](t, m[oldestAgeName], "s"); age <= 0 {
-		t.Errorf("нет лага для зависшего файла: %v", age)
-	}
+	scanDir(t, s)
+	scanDir(t, s)
 	requirePresent(t, path)
 	requireMissing(t, filepath.Join(cfg.Dir, fileB))
 	publish(t, cfg.Dir, fileA, "новая под тем же именем")
-	scanDir(t, i)
+	scanDir(t, s)
 	requireMissing(t, path)
 	if want := []string{"первая", "следующая", "новая под тем же именем"}; !slices.Equal(handled, want) {
 		t.Errorf("неожиданные вызовы обработчика: %v", handled)
@@ -249,22 +245,21 @@ func TestScanForgetsVanishedPublication(t *testing.T) {
 	cfg.MaxAttempts = 1
 	t.Cleanup(func() { setMode(t, cfg.Dir, 0o700) })
 	publish(t, cfg.Dir, fileA, "публикация")
-	i := newTestInbox(t, cfg, func([]byte, time.Time) error {
+	s := newTestScanner(t, cfg, func([]byte, time.Time) error {
 		setMode(t, cfg.Dir, 0o500)
 		return nil
-	}, io.Discard, clock.RealTime{})
-	scanDir(t, i)
-	if len(i.scanner.states) != 1 {
-		t.Fatal("не сохранено состояние неудалённой публикации")
-	}
+	}, io.Discard, pkgClock.RealTime{})
+	scanDir(t, s)
 	setMode(t, cfg.Dir, 0o700)
 	if err := os.Remove(filepath.Join(cfg.Dir, fileA)); err != nil {
 		t.Fatal(err)
 	}
-	scanDir(t, i)
-	if len(i.scanner.states) != 0 {
-		t.Error("сохранено состояние исчезнувшей публикации")
-	}
+	scanDir(t, s)
+	setMode(t, cfg.Dir, 0o500)
+	scanDir(t, s)
+	setMode(t, cfg.Dir, 0o700)
+	scanDir(t, s)
+	requireMissing(t, filepath.Join(cfg.Dir, fileA))
 }
 
 func TestScanDoesNotUnlinkReplacementPublishedDuringHandle(t *testing.T) {
@@ -272,96 +267,21 @@ func TestScanDoesNotUnlinkReplacementPublishedDuringHandle(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	publish(t, cfg.Dir, fileA, "старая")
 	var handled []string
-	i := newTestInbox(t, cfg, func(contents []byte, _ time.Time) error {
+	s := newTestScanner(t, cfg, func(contents []byte, _ time.Time) error {
 		value := string(contents)
 		handled = append(handled, value)
 		if value == "старая" {
 			publish(t, cfg.Dir, fileA, "новая")
 		}
 		return nil
-	}, io.Discard, clock.RealTime{})
-	scanDir(t, i)
+	}, io.Discard, pkgClock.RealTime{})
+	scanDir(t, s)
 	path := filepath.Join(cfg.Dir, fileA)
 	requirePresent(t, path)
-	scanDir(t, i)
+	scanDir(t, s)
 	requireMissing(t, path)
 	if !slices.Equal(handled, []string{"старая", "новая"}) {
 		t.Errorf("неожиданные публикации: %v", handled)
-	}
-}
-
-func TestReadRejectsReplacementsSinceListing(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		replace func(*testing.T, string)
-	}{
-		{name: "другой обычный файл", replace: func(t *testing.T, dir string) {
-			publish(t, dir, fileA, "новая публикация")
-		}},
-		{name: "ссылка на исходный inode", replace: func(t *testing.T, dir string) {
-			path := filepath.Join(dir, fileA)
-			moved := filepath.Join(dir, "moved")
-			if err := os.Rename(path, moved); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(moved, path); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "именованный канал", replace: func(t *testing.T, dir string) {
-			tmp := filepath.Join(dir, "replacement")
-			if err := syscall.Mkfifo(tmp, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(tmp, filepath.Join(dir, fileA)); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := testConfig(t.TempDir())
-			publish(t, cfg.Dir, fileA, "старая публикация")
-			info, err := os.Lstat(filepath.Join(cfg.Dir, fileA))
-			if err != nil {
-				t.Fatal(err)
-			}
-			tt.replace(t, cfg.Dir)
-			i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-			result := make(chan error, 1)
-			go func() {
-				_, err := i.scanner.read(info)
-				result <- err
-			}()
-			select {
-			case err := <-result:
-				if !errors.Is(err, errPublicationChanged) {
-					t.Fatalf("подмена при открытии не обнаружена: %v", err)
-				}
-			case <-time.After(testTimeout):
-				t.Fatal("чтение подменённой публикации заблокировалось")
-			}
-		})
-	}
-}
-
-func TestReadLimitedDetectsExtraByte(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "oversized")
-	writeFile(t, path, "123")
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if closeErr := file.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-	})
-	contents, err := readLimited(file, 2)
-	if contents != nil || !errors.Is(err, errFileTooLarge) {
-		t.Errorf("лишний байт не отклонён: %q, %v", contents, err)
 	}
 }
 
@@ -369,13 +289,60 @@ type testClock struct{ now time.Time }
 
 func (c *testClock) Now() time.Time { return c.now }
 
-func scanDir(t *testing.T, i *Inbox) {
+type scannerConfig struct {
+	Dir string
+	aUsecase.Limits
+}
+
+func testConfig(dir string) scannerConfig {
+	return scannerConfig{
+		Dir:    dir,
+		Limits: aUsecase.Limits{MaxFilesPerScan: 12, MaxFileBytes: 1024, MaxAttempts: 2},
+	}
+}
+
+func newTestScanner(
+	t *testing.T,
+	cfg scannerConfig,
+	handle pkgApi.Handle,
+	out io.Writer,
+	clk pkgClock.Clock,
+) *aUsecase.Scanner {
 	t.Helper()
-	entries, err := os.ReadDir(i.scanner.cfg.Dir)
+	logger := slog.New(slog.NewJSONHandler(out, nil))
+	return aUsecase.New(iFilesystem.New(cfg.Dir), handle, cfg.Limits, clk, logger)
+}
+
+func scanDir(t *testing.T, s *aUsecase.Scanner) {
+	t.Helper()
+	entries, err := s.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	i.scanner.scan(t.Context(), entries)
+	s.Scan(t.Context(), entries)
+}
+
+func publish(t *testing.T, dir, name, contents string) {
+	t.Helper()
+	tmp := filepath.Join(dir, name+".tmp")
+	writeFile(t, tmp, contents)
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ожидалось отсутствие %q, ошибка Lstat: %v", path, err)
+	}
 }
 
 func requirePresent(t *testing.T, path string) {

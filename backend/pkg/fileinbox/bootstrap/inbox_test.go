@@ -1,25 +1,29 @@
 //go:build linux
 
-package fileinbox
+package bootstrap_test
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
-	"github.com/vendelev/sre-metrics/pkg/clock"
-	"github.com/vendelev/sre-metrics/pkg/task"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	pkgClock "github.com/vendelev/sre-metrics/pkg/clock"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
+	pkgBootstrap "github.com/vendelev/sre-metrics/pkg/fileinbox/bootstrap"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/fileinbox/config"
+	pkgTask "github.com/vendelev/sre-metrics/pkg/task"
 )
 
 const (
 	fileA       = "00000000-0000-4000-8000-00000000000a.json"
 	fileB       = "00000000-0000-4000-8000-00000000000b.json"
-	fileC       = "00000000-0000-4000-8000-00000000000c.json"
 	testTimeout = 3 * time.Second
 )
 
@@ -27,34 +31,34 @@ func TestNewRejectsInvalidInputs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		edit func(*Config)
+		edit func(*pkgConfig.Config)
 	}{
-		{name: "каталог", edit: func(cfg *Config) { cfg.Dir = "  " }},
-		{name: "период", edit: func(cfg *Config) { cfg.ScanInterval = 0 }},
-		{name: "число файлов", edit: func(cfg *Config) { cfg.MaxFilesPerScan = 0 }},
-		{name: "размер", edit: func(cfg *Config) { cfg.MaxFileBytes = -1 }},
-		{name: "попытки", edit: func(cfg *Config) { cfg.MaxAttempts = 0 }},
+		{name: "каталог", edit: func(cfg *pkgConfig.Config) { cfg.Dir = "  " }},
+		{name: "период", edit: func(cfg *pkgConfig.Config) { cfg.ScanInterval = 0 }},
+		{name: "число файлов", edit: func(cfg *pkgConfig.Config) { cfg.MaxFilesPerScan = 0 }},
+		{name: "размер", edit: func(cfg *pkgConfig.Config) { cfg.MaxFileBytes = -1 }},
+		{name: "попытки", edit: func(cfg *pkgConfig.Config) { cfg.MaxAttempts = 0 }},
 	}
 	handle := func([]byte, time.Time) error { return nil }
 	logger := slog.New(slog.DiscardHandler)
-	clk := clock.RealTime{}
+	clk := pkgClock.RealTime{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig(t.TempDir())
 			tt.edit(&cfg)
-			if _, err := New(cfg, handle, logger, clk); err == nil {
+			if _, err := pkgBootstrap.New(cfg, handle, logger, clk); err == nil {
 				t.Fatal("некорректная конфигурация принята")
 			}
 		})
 	}
 	cfg := testConfig(t.TempDir())
-	if _, err := New(cfg, nil, logger, clk); err == nil {
+	if _, err := pkgBootstrap.New(cfg, nil, logger, clk); err == nil {
 		t.Error("принят отсутствующий обработчик")
 	}
-	if _, err := New(cfg, handle, nil, clk); err == nil {
+	if _, err := pkgBootstrap.New(cfg, handle, nil, clk); err == nil {
 		t.Error("принят отсутствующий журнал")
 	}
-	if _, err := New(cfg, handle, logger, nil); err == nil {
+	if _, err := pkgBootstrap.New(cfg, handle, logger, nil); err == nil {
 		t.Error("приняты отсутствующие часы")
 	}
 }
@@ -71,21 +75,15 @@ func TestRunCreatesDirectoryAndWatchesRename(t *testing.T) {
 		default:
 		}
 		return nil
-	}, io.Discard, clock.RealTime{})
+	})
 
 	requireMissing(t, dir)
-	running := runTask(t, inbox, inbox.Run)
-	select {
-	case <-inbox.Ready():
-	case <-running.Done():
-		t.Fatalf("Run завершился до готовности: %v", running.Err())
-	case <-time.After(testTimeout):
-		t.Fatal("файловый вход не сообщил о готовности")
-	}
-	publish(t, dir, fileA, `{"event_id":"00000000-0000-4000-8000-00000000000b"}`)
+	running := runTask(t, inbox)
+	awaitReady(t, inbox, running)
+	publish(t, dir, fileA, "синтетическая публикация")
 	select {
 	case contents := <-got:
-		if contents != `{"event_id":"00000000-0000-4000-8000-00000000000b"}` {
+		if contents != "синтетическая публикация" {
 			t.Fatalf("неожиданное содержимое: %q", contents)
 		}
 	case <-time.After(testTimeout):
@@ -104,22 +102,43 @@ func TestRunStartupFailureDoesNotSignalReady(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "not-a-directory")
 	writeFile(t, path, "синтетический файл")
-	i := newTestInbox(t, testConfig(path), nil, io.Discard, clock.RealTime{})
+	i := newTestInbox(t, testConfig(path), nil)
 	if err := i.Run(); err == nil {
 		t.Fatal("не удалось обнаружить, что путь занят файлом")
 	}
 	requireNotReady(t, i)
 }
 
-func TestRunScansExistingPublicationsAtStartup(t *testing.T) {
+func TestRunSignalsReadyBeforeHandlingStartupBatch(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	cfg.ScanInterval = time.Hour
 	publish(t, dir, fileA, "публикация до запуска")
-	i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-	runTask(t, i, i.Run)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	i := newTestInbox(t, cfg, func([]byte, time.Time) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	running := runTask(t, i)
+	select {
+	case <-entered:
+	case <-time.After(testTimeout):
+		t.Fatal("стартовая публикация не передана обработчику")
+	}
+	select {
+	case <-i.Ready():
+	default:
+		t.Fatal("обработчик вызван до объявления готовности")
+	}
+	unblock()
 	requireEventuallyMissing(t, filepath.Join(dir, fileA))
+	i.Stop()
+	requireStopped(t, running)
 }
 
 func TestRunRejectsInaccessibleDirectory(t *testing.T) {
@@ -128,7 +147,7 @@ func TestRunRejectsInaccessibleDirectory(t *testing.T) {
 	dir := t.TempDir()
 	setMode(t, dir, 0o500)
 	t.Cleanup(func() { setMode(t, dir, 0o700) })
-	i := newTestInbox(t, testConfig(dir), nil, io.Discard, clock.RealTime{})
+	i := newTestInbox(t, testConfig(dir), nil)
 	if err := i.Run(); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("не обнаружен недоступный для удаления каталог: %v", err)
 	}
@@ -140,8 +159,8 @@ func TestRunFailsWhenDirectoryDisappearsAfterReady(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "inbox")
 	cfg := testConfig(dir)
 	cfg.ScanInterval = 10 * time.Millisecond
-	i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-	running := task.New()
+	i := newTestInbox(t, cfg, nil)
+	running := pkgTask.New()
 	go func() { running.Complete(i.Run()) }()
 	t.Cleanup(func() {
 		i.Stop()
@@ -151,14 +170,7 @@ func TestRunFailsWhenDirectoryDisappearsAfterReady(t *testing.T) {
 			t.Error("Run не завершился после Stop")
 		}
 	})
-	select {
-	case <-i.Ready():
-	case <-running.Done():
-		t.Fatalf("Run завершился до готовности: %v", running.Err())
-	case <-time.After(testTimeout):
-		t.Fatal("файловый вход не сообщил о готовности")
-	}
-
+	awaitReady(t, i, running)
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +187,7 @@ func TestRunFailsWhenDirectoryDisappearsAfterReady(t *testing.T) {
 func TestRunCanBeStoppedBeforeStart(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "inbox")
-	i := newTestInbox(t, testConfig(dir), nil, io.Discard, clock.RealTime{})
+	i := newTestInbox(t, testConfig(dir), nil)
 	i.Stop()
 	if err := i.Run(); err != nil {
 		t.Fatalf("ошибка штатной отмены: %v", err)
@@ -184,36 +196,61 @@ func TestRunCanBeStoppedBeforeStart(t *testing.T) {
 	requireNotReady(t, i)
 }
 
-func TestLoopRescansWithoutNotifications(t *testing.T) {
+func TestRunRescansPeriodically(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t.TempDir())
 	cfg.ScanInterval = 10 * time.Millisecond
-	i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-	runTask(t, i, func() error {
-		return i.loop(i.ctx, nil)
-	})
+	cfg.MaxFilesPerScan = 1
+	// Обе публикации появляются до наблюдения, удаление не запускает новый скан.
 	publish(t, cfg.Dir, fileA, "синтетическая публикация")
+	publish(t, cfg.Dir, fileB, "вторая синтетическая публикация")
+	i := newTestInbox(t, cfg, nil)
+	runTask(t, i)
 	requireEventuallyMissing(t, filepath.Join(cfg.Dir, fileA))
+	requireEventuallyMissing(t, filepath.Join(cfg.Dir, fileB))
 }
 
-func TestLoopRescansOnNotificationOverflow(t *testing.T) {
+func TestActivateMetricsInitializesPublicInstruments(t *testing.T) {
 	t.Parallel()
-	cfg := testConfig(t.TempDir())
-	cfg.ScanInterval = time.Hour
-	i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-	publish(t, cfg.Dir, fileA, "синтетическая публикация")
-	// Переполнение зависит от лимита ядра; заменён только сигнал от watcher, не файловая система.
-	watchErrors := make(chan error, 1)
-	watchErrors <- fsnotify.ErrEventOverflow
-	close(watchErrors)
-	runTask(t, i, func() error {
-		return i.loop(i.ctx, &fsnotify.Watcher{Errors: watchErrors})
+	i := newTestInbox(t, testConfig(t.TempDir()), nil)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() {
+		if err := provider.Shutdown(t.Context()); err != nil {
+			t.Error(err)
+		}
 	})
-	requireEventuallyMissing(t, filepath.Join(cfg.Dir, fileA))
+	meter := provider.Meter("fileinbox-test")
+	if err := i.ActivateMetrics(t.Context(), nil); err == nil {
+		t.Fatal("отсутствующий meter не отклонён")
+	}
+	if err := i.ActivateMetrics(t.Context(), meter); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.ActivateMetrics(t.Context(), meter); err == nil {
+		t.Fatal("повторная активация не отклонена")
+	}
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.ScopeMetrics) != 1 {
+		t.Fatalf("ожидалась одна область диагностики: %v", data.ScopeMetrics)
+	}
+	if len(data.ScopeMetrics[0].Metrics) != 1 || data.ScopeMetrics[0].Metrics[0].Name != "file.inbox.events" {
+		t.Fatalf("не инициализирован счётчик исходов: %v", data.ScopeMetrics[0].Metrics)
+	}
+	i.Stop()
+	if err := i.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.ActivateMetrics(t.Context(), meter); err == nil {
+		t.Fatal("активация после запуска не отклонена")
+	}
 }
 
-func testConfig(dir string) Config {
-	return Config{
+func testConfig(dir string) pkgConfig.Config {
+	return pkgConfig.Config{
 		Dir:             dir,
 		ScanInterval:    time.Second,
 		MaxFilesPerScan: 12,
@@ -222,22 +259,23 @@ func testConfig(dir string) Config {
 	}
 }
 
-func newTestInbox(t *testing.T, cfg Config, handle Handle, out io.Writer, clk clock.Clock) *Inbox {
+func newTestInbox(t *testing.T, cfg pkgConfig.Config, handle pkgApi.Handle) pkgApi.Inbox {
 	t.Helper()
 	if handle == nil {
 		handle = func([]byte, time.Time) error { return nil }
 	}
-	inbox, err := New(cfg, handle, slog.New(slog.NewJSONHandler(out, nil)), clk)
+	logger := slog.New(slog.DiscardHandler)
+	inbox, err := pkgBootstrap.New(cfg, handle, logger, pkgClock.RealTime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return inbox
 }
 
-func runTask(t *testing.T, inbox *Inbox, run func() error) *task.Task {
+func runTask(t *testing.T, inbox pkgApi.Inbox) *pkgTask.Task {
 	t.Helper()
-	running := task.New()
-	go func() { running.Complete(run()) }()
+	running := pkgTask.New()
+	go func() { running.Complete(inbox.Run()) }()
 	t.Cleanup(func() {
 		inbox.Stop()
 		requireStopped(t, running)
@@ -245,7 +283,18 @@ func runTask(t *testing.T, inbox *Inbox, run func() error) *task.Task {
 	return running
 }
 
-func requireStopped(t *testing.T, running *task.Task) {
+func awaitReady(t *testing.T, inbox pkgApi.Inbox, running *pkgTask.Task) {
+	t.Helper()
+	select {
+	case <-inbox.Ready():
+	case <-running.Done():
+		t.Fatalf("Run завершился до готовности: %v", running.Err())
+	case <-time.After(testTimeout):
+		t.Fatal("файловый вход не сообщил о готовности")
+	}
+}
+
+func requireStopped(t *testing.T, running *pkgTask.Task) {
 	t.Helper()
 	select {
 	case <-running.Done():
@@ -257,12 +306,26 @@ func requireStopped(t *testing.T, running *task.Task) {
 	}
 }
 
-func requireNotReady(t *testing.T, inbox *Inbox) {
+func requireNotReady(t *testing.T, inbox pkgApi.Inbox) {
 	t.Helper()
 	select {
 	case <-inbox.Ready():
 		t.Fatal("объявлена готовность незапущенного файлового входа")
 	default:
+	}
+}
+
+func requireUnprivileged(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("сценарий требует непривилегированного пользователя")
+	}
+}
+
+func setMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 

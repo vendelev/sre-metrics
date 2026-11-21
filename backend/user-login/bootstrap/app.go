@@ -8,7 +8,9 @@ import (
 	"go.uber.org/dig"
 
 	"github.com/vendelev/sre-metrics/pkg/clock"
-	"github.com/vendelev/sre-metrics/pkg/fileinbox"
+	pkgFileInboxApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
+	pkgFileInboxBootstrap "github.com/vendelev/sre-metrics/pkg/fileinbox/bootstrap"
+	pkgFileInboxConfig "github.com/vendelev/sre-metrics/pkg/fileinbox/config"
 	"github.com/vendelev/sre-metrics/pkg/httproute"
 	"github.com/vendelev/sre-metrics/user-login/config"
 	"github.com/vendelev/sre-metrics/user-login/internal/application/usecase"
@@ -72,8 +74,8 @@ func inboxOf(
 	q *queue.EventQueue,
 	logger *slog.Logger,
 	clk clock.Clock,
-) (*fileinbox.Inbox, error) {
-	input, err := fileinbox.New(fileinbox.Config{
+) (pkgFileInboxApi.Inbox, error) {
+	input, err := pkgFileInboxBootstrap.New(pkgFileInboxConfig.Config{
 		Dir:             cfg.Dir,
 		ScanInterval:    cfg.ScanInterval,
 		MaxFilesPerScan: cfg.MaxFilesPerScan,
@@ -91,7 +93,7 @@ func inboxOf(
 func NewModule(
 	recorder *otel.Recorder,
 	w *worker.Worker,
-	input *fileinbox.Inbox,
+	input pkgFileInboxApi.Inbox,
 	q *queue.EventQueue,
 	logger *slog.Logger,
 	clock clock.Clock,

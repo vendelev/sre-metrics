@@ -1,4 +1,5 @@
-package fileinbox
+// Package config задаёт настройки файлового входа.
+package config
 
 import (
 	"errors"
@@ -20,7 +21,8 @@ type Config struct {
 	MaxAttempts int
 }
 
-func (c Config) validate() error {
+// Validate проверяет настройки перед сборкой файлового входа.
+func (c Config) Validate() error {
 	switch {
 	case strings.TrimSpace(c.Dir) == "":
 		return errors.New("не задан каталог файлового входа")

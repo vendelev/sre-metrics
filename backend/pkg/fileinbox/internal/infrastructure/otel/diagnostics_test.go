@@ -1,13 +1,13 @@
 //go:build linux
 
-package fileinbox
+package otel_test
 
 import (
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -17,7 +17,22 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/vendelev/sre-metrics/pkg/clock"
+	pkgClock "github.com/vendelev/sre-metrics/pkg/clock"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/fileinbox/api"
+	aUsecase "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/usecase"
+	iFilesystem "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/infrastructure/filesystem"
+	iOtel "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/infrastructure/otel"
+)
+
+const (
+	fileA           = "00000000-0000-4000-8000-00000000000a.json"
+	fileB           = "00000000-0000-4000-8000-00000000000b.json"
+	fileC           = "00000000-0000-4000-8000-00000000000c.json"
+	eventsName      = "file.inbox.events"
+	filesName       = "file.inbox.files"
+	sizeName        = "file.inbox.size"
+	oldestAgeName   = "file.inbox.oldest_file.age"
+	volumeUsageName = "file.inbox.volume.usage"
 )
 
 func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
@@ -26,12 +41,12 @@ func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
 	cfg.MaxFilesPerScan = 1
 	cfg.MaxFileBytes = 8
 	attempt := 0
-	i := newTestInbox(t, cfg, func(contents []byte, _ time.Time) error {
+	s := newTestScanner(cfg, func(contents []byte, _ time.Time) error {
 		switch string(contents) {
 		case "retry":
 			attempt++
 			if attempt == 1 {
-				return fmt.Errorf("синтетическая задержка: %w", ErrRetry)
+				return fmt.Errorf("синтетическая задержка: %w", pkgApi.ErrRetry)
 			}
 			return nil
 		case "bad":
@@ -40,8 +55,8 @@ func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
 			t.Fatalf("лишний файл передан обработчику: %q", contents)
 			return nil
 		}
-	}, io.Discard, clock.RealTime{})
-	reader := attachDiagnostics(t, i)
+	})
+	reader := attachDiagnostics(t, s)
 	assertOutcomes(t, collectDiagnostics(t, reader), nil)
 
 	publish(t, cfg.Dir, fileA, "retry")
@@ -62,7 +77,7 @@ func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
 	setMtime(t, filepath.Join(cfg.Dir, "synthetic-private.json"), oldest.Add(4*time.Minute))
 
 	earliest := time.Since(oldest).Seconds()
-	scanDir(t, i)
+	scanDir(t, s)
 	m := collectDiagnostics(t, reader)
 	assertOutcomes(t, m, map[string]int64{"retry": 1})
 	assertDirectoryTotals(t, m, 4, 20)
@@ -72,7 +87,7 @@ func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
 	requirePresent(t, filepath.Join(cfg.Dir, fileA))
 
 	for range 4 {
-		scanDir(t, i)
+		scanDir(t, s)
 	}
 	m = collectDiagnostics(t, reader)
 	assertOutcomes(t, m, map[string]int64{"retry": 1, "accepted": 1, "invalid_event": 3})
@@ -81,7 +96,7 @@ func TestDiagnosticsRecordsOutcomesAndDirectoryBeforeBatch(t *testing.T) {
 		t.Errorf("mtime в будущем: лаг %v вместо 0", age)
 	}
 
-	scanDir(t, i)
+	scanDir(t, s)
 	m = collectDiagnostics(t, reader)
 	assertOutcomes(t, m, map[string]int64{"retry": 1, "accepted": 1, "invalid_event": 3})
 	assertDirectoryTotals(t, m, 0, 0)
@@ -105,21 +120,21 @@ func TestDiagnosticsVolumeIncludesTmpFilesAndSiblingDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := os.RemoveAll(root); err != nil {
-			t.Error(err)
+		if cleanupErr := os.RemoveAll(root); cleanupErr != nil {
+			t.Error(cleanupErr)
 		}
 	})
 	cfg := testConfig(filepath.Join(root, "inbox"))
 	sibling := filepath.Join(root, "sibling")
 	for _, dir := range []string{cfg.Dir, sibling} {
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			t.Fatal(err)
+		if mkdirErr := os.Mkdir(dir, 0o700); mkdirErr != nil {
+			t.Fatal(mkdirErr)
 		}
 	}
-	i := newTestInbox(t, cfg, nil, io.Discard, clock.RealTime{})
-	reader := attachDiagnostics(t, i)
+	s := newTestScanner(cfg, func([]byte, time.Time) error { return nil })
+	reader := attachDiagnostics(t, s)
 	measure := func() float64 {
-		scanDir(t, i)
+		scanDir(t, s)
 		m := collectDiagnostics(t, reader)
 		assertDirectoryTotals(t, m, 0, 0)
 		return gaugeValue[float64](t, m[volumeUsageName], "1")
@@ -139,7 +154,12 @@ func TestDiagnosticsVolumeIncludesTmpFilesAndSiblingDirectories(t *testing.T) {
 	}
 }
 
-func attachDiagnostics(t *testing.T, i *Inbox) *sdkmetric.ManualReader {
+func newTestScanner(cfg scannerConfig, handle pkgApi.Handle) *aUsecase.Scanner {
+	logger := slog.New(slog.DiscardHandler)
+	return aUsecase.New(iFilesystem.New(cfg.Dir), handle, cfg.Limits, pkgClock.RealTime{}, logger)
+}
+
+func attachDiagnostics(t *testing.T, s *aUsecase.Scanner) *sdkmetric.ManualReader {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -148,10 +168,63 @@ func attachDiagnostics(t *testing.T, i *Inbox) *sdkmetric.ManualReader {
 			t.Error(err)
 		}
 	})
-	if err := i.ActivateMetrics(t.Context(), provider.Meter("fileinbox-test")); err != nil {
+	diagnostics, err := iOtel.New(t.Context(), provider.Meter("fileinbox-test"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	s.SetDiagnostics(diagnostics)
 	return reader
+}
+
+func scanDir(t *testing.T, s *aUsecase.Scanner) {
+	t.Helper()
+	entries, err := s.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Scan(t.Context(), entries)
+}
+
+type scannerConfig struct {
+	Dir string
+	aUsecase.Limits
+}
+
+func testConfig(dir string) scannerConfig {
+	return scannerConfig{
+		Dir:    dir,
+		Limits: aUsecase.Limits{MaxFilesPerScan: 12, MaxFileBytes: 1024, MaxAttempts: 2},
+	}
+}
+
+func publish(t *testing.T, dir, name, contents string) {
+	t.Helper()
+	tmp := filepath.Join(dir, name+".tmp")
+	writeFile(t, tmp, contents)
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requirePresent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("ожидалось наличие %q: %v", path, err)
+	}
+}
+
+func setMtime(t *testing.T, path string, mtime time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func collectDiagnostics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {

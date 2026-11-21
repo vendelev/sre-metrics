@@ -1,0 +1,59 @@
+rule_files:
+  - file-inbox.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: "Лаг: максимум по каталогам, срабатывание после выдержки, сброс при восстановлении"
+    interval: 1m
+    input_series:
+      - series: 'file_inbox_oldest_file_age_seconds{node="n1",environment="test",job="a",instance="i1"}'
+        values: '150x5 120'
+      - series: 'file_inbox_oldest_file_age_seconds{node="n1",environment="test",job="b",instance="i2"}'
+        values: '180x5 120'
+      - series: 'file_inbox_oldest_file_age_seconds{node="n1",environment="dev",job="a"}'
+        values: '120x6'
+      - series: 'file_inbox_oldest_file_age_seconds{environment="test",job="a"}'
+        values: '900x6'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FileInboxLagHigh
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FileInboxLagHigh
+        exp_alerts:
+          - exp_labels: {node: "n1", environment: "test", severity: warning}
+            exp_annotations:
+              summary: "Файловый вход на n1 долго не разбирает очередь"
+      - eval_time: 6m
+        alertname: FileInboxLagHigh
+        exp_alerts: []
+
+  - name: "Заполнение: общий том не суммируется между модулями, учитываются нода и окружение"
+    interval: 1m
+    input_series:
+      - series: 'file_inbox_volume_usage_ratio{node="n1",environment="test",job="a",instance="i1"}'
+        values: '0.8x3 0.79'
+      - series: 'file_inbox_volume_usage_ratio{node="n1",environment="test",job="b",instance="i2"}'
+        values: '0.9x3 0.79'
+      - series: 'file_inbox_volume_usage_ratio{node="n2",environment="test",job="a"}'
+        values: '0.6x4'
+      - series: 'file_inbox_volume_usage_ratio{node="n2",environment="test",job="b"}'
+        values: '0.6x4'
+      - series: 'file_inbox_volume_usage_ratio{node="n1",environment="dev",job="a"}'
+        values: '0.79x4'
+      - series: 'file_inbox_volume_usage_ratio{node="n3",job="a"}'
+        values: '1x4'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FileInboxVolumeUsageHigh
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: FileInboxVolumeUsageHigh
+        exp_alerts:
+          - exp_labels: {node: "n1", environment: "test", severity: warning}
+            exp_annotations:
+              summary: "Общий том файлового входа на n1 заполнен на 80% или более"
+      - eval_time: 4m
+        alertname: FileInboxVolumeUsageHigh
+        exp_alerts: []

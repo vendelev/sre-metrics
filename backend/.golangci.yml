@@ -77,6 +77,58 @@ linters:
                 - hugeParam
         depguard:
             rules:
+                fileinbox-api:
+                    files:
+                        - "${base-path}/pkg/fileinbox/api/*.go"
+                        - "${base-path}/pkg/fileinbox/api/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "go.opentelemetry.io/otel/metric$"
+                fileinbox-config:
+                    files:
+                        - "${base-path}/pkg/fileinbox/config/*.go"
+                        - "${base-path}/pkg/fileinbox/config/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                fileinbox-domain:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/domain/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/domain/**/*.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/google/uuid$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                fileinbox-application:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/application/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/application/**/*.go"
+                        - "!${base-path}/pkg/fileinbox/internal/application/*_test.go"
+                        - "!${base-path}/pkg/fileinbox/internal/application/**/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/vendelev/sre-metrics/pkg/clock$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/api$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/"
+                fileinbox-presentation:
+                    files:
+                        - "${base-path}/pkg/fileinbox/internal/presentation/*.go"
+                        - "${base-path}/pkg/fileinbox/internal/presentation/**/*.go"
+                        - "!${base-path}/pkg/fileinbox/internal/presentation/*_test.go"
+                        - "!${base-path}/pkg/fileinbox/internal/presentation/**/*_test.go"
+                    list-mode: strict
+                    allow:
+                        - "$gostd"
+                        - "github.com/fsnotify/fsnotify$"
+                        - "go.opentelemetry.io/otel/metric$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/application/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/domain/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/infrastructure/"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/internal/presentation/"
                 app-isolation:
                     files:
                         - "${base-path}/cmd/*.go"
@@ -175,7 +227,7 @@ linters:
                         - "github.com/google/uuid$"
                         - "github.com/go-chi/**"
                         - "github.com/vendelev/sre-metrics/pkg/clock$"
-                        - "github.com/vendelev/sre-metrics/pkg/fileinbox$"
+                        - "github.com/vendelev/sre-metrics/pkg/fileinbox/api$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain$"
                         - "github.com/vendelev/sre-metrics/user-login/internal/domain/"
