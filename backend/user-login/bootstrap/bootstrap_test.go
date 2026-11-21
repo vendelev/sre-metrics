@@ -161,7 +161,7 @@ func mustModuleWithInbox(t *testing.T, recorder *otel.Recorder, w *worker.Worker
 }
 
 // Рабочая сборка не активирует инструменты и не создаёт provider: активацию
-// выполняет Start в meter запущенного pipeline core.
+// выполняет Start в meter запущенного pipeline.
 func TestModuleBuildDoesNotActivateInstruments(t *testing.T) {
 	t.Parallel()
 	recorder := otel.Prepare()

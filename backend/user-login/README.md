@@ -18,7 +18,7 @@ Counter и Histogram в OpenTelemetry Go SDK `v1.47.0`, периодическо
 фазы модуля задаёт [Module](bootstrap/runtime.go) (разделение bootstrap
 приложения и модуля, 2026-11-14), их координацию выполняет
 [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/app.go) рядом с
-общим модулем [core](../core/README.md).
+общим пакетом [otlpmetrics](../pkg/otlpmetrics/README.md).
 OTLP/HTTP-pipeline с официальным экспортёром `v1.47.0` подключён к реальному запуску:
 `PeriodicReader` периодически отправляет cumulative-метрики; финальный экспорт выполняется
 штатным shutdown reader на best effort — с оставшимся временем общего бюджета остановки.
@@ -83,7 +83,7 @@ Counter и Histogram могут отразить одну операцию в с
 задач и drain — в [Module](bootstrap/runtime.go), координация приложения и
 общий бюджет остановки — в [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/app.go),
 HTTP-сервер — в [httpserver](../pkg/httpserver/README.md), OTel-pipeline —
-в общем модуле [core](../core/README.md),
+в общем пакете [otlpmetrics](../pkg/otlpmetrics/README.md),
 очередь приёма — в [event_queue.go](internal/infrastructure/queue/event_queue.go), обработка и периодическое обслуживание —
 в [worker](internal/infrastructure/worker/worker.go). Только воркер вызывает один LoginObserver и изменяет
 одно хранилище. В memory нет мьютекса, транзакционной обёртки или копирования сценариев:
@@ -219,8 +219,8 @@ exemplars и View гистограммы задаются кодом.
 Окружение процесса не изменяется; глобальные provider, логгер и обработчик ошибок
 не подменяются. Конкурентное изменение env не поддерживается.
 
-Resource и pipeline процесса владеет core: [bootstrap.Metrics](../core/bootstrap/metrics.go)
-после bind создаёт provider с одним `PeriodicReader` и переданными View модуля,
+Resource и pipeline процесса принадлежат [otlpmetrics](../pkg/otlpmetrics/README.md):
+после bind пакет создаёт provider с одним `PeriodicReader` и переданными View модуля,
 без production-`ManualReader`. [Prepare](internal/infrastructure/otel/recorder.go)
 возвращает Recorder без provider и инструментов; [Activate](internal/infrastructure/otel/recorder.go)
 регистрирует инструменты и шесть нулевых рядов в meter общего provider после
@@ -240,7 +240,7 @@ SDK v1.47.0 не гарантирует немедленное закрытие 
 [bootstrap.Provide](bootstrap/app.go); ошибки сборки останавливают запуск
 до открытия ресурсов. Владелец протокола запуска и остановки приложения —
 [bootstrap приложения](../cmd/user-login-httpserver/bootstrap/runtime.go):
-координация публичных фаз core и модуля, очистка частичного запуска и общий
+координация публичных фаз pipeline и модуля, очистка частичного запуска и общий
 бюджет остановки; фазы фоновых задач модуля — в [Module](bootstrap/runtime.go).
 Запуск: **listener → SDK/pipeline → активация инструментов модуля → воркер →
 файловый вход → HTTP Serve → подтверждение готовности**.
@@ -271,7 +271,7 @@ pipeline освобождает listener и частично созданные 
 не планируются, незавершённый drain возвращает ошибку. Поздний HTTP-обработчик
 не может поставить событие после закрытия приёма.
 Результаты фоновых задач публикуются через каналы завершения; отдельной задачи
-HTTP Shutdown нет. `Metrics.Shutdown` core передаётся оставшееся время: reader отменяет
+HTTP Shutdown нет. `Pipeline.Shutdown` передаётся оставшееся время: reader отменяет
 периодический вызов, дожидается его завершения, выполняет последний сбор/экспорт
 и завершает exporter. Даже при исчерпанном сроке команда освобождения
 передаётся: вызов shutdown с истёкшим контекстом не гарантирует ни последней отправки,

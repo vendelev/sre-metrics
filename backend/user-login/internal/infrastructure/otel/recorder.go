@@ -28,8 +28,8 @@ const (
 
 // Recorder регистрирует измерения входа, не выполняя сетевых операций.
 // Рабочий вариант не создаёт provider: инструменты регистрирует Activate
-// в meter общего pipeline core, а provider принадлежит core и освобождает
-// его Pipeline.Shutdown. Изолированный тестовый вариант создаёт provider
+// в meter общего pipeline, которому принадлежит provider; освобождает его
+// Pipeline.Shutdown. Изолированный тестовый вариант создаёт provider
 // с ManualReader через New. Один экземпляр принадлежит одному состоянию
 // сервиса; глобальный provider не меняется.
 type Recorder struct {
@@ -57,13 +57,13 @@ func New() (*Recorder, error) {
 }
 
 // Prepare возвращает Recorder рабочего варианта без provider и инструментов.
-// Инструменты регистрирует Activate в meter запущенного pipeline core; до неё
+// Инструменты регистрирует Activate в meter запущенного pipeline; до неё
 // регистрировать измерения нельзя. Активация выполняется однократно, до запуска
 // HTTP и обслуживания, без конкурентного доступа.
 func Prepare() *Recorder { return &Recorder{} }
 
 // Activate регистрирует инструменты и нулевые ряды Counter в meter запущенного
-// pipeline core. Границы гистограммы задаёт View модуля (HistogramView),
+// pipeline. Границы гистограммы задаёт View модуля (HistogramView),
 // переданный в pipeline при его сборке. Активация выполняется однократно;
 // освобождение provider выполняет Shutdown pipeline, а не Recorder.
 func (r *Recorder) Activate(meter metric.Meter) error {
@@ -104,7 +104,7 @@ func recorderWithReader(res *resource.Resource, reader sdkmetric.Reader) (*Recor
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(reader),
-		// Общий pipeline core отключает exemplars той же настройкой.
+		// Общий pipeline отключает exemplars той же настройкой.
 		sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter),
 		sdkmetric.WithView(HistogramView()),
 	)
@@ -179,14 +179,14 @@ func (r *Recorder) Record(measurements dScenario.Measurements) {
 
 // Activated сообщает, зарегистрированы ли инструменты: до Activate регистрация
 // измерений невозможна. Рабочая сборка активирует Recorder в meter общего
-// pipeline core; изолированный тестовый вариант создаёт инструменты сразу.
+// pipeline; изолированный тестовый вариант создаёт инструменты сразу.
 func (r *Recorder) Activated() bool { return r.completed != nil }
 
 // Reader предоставляет ManualReader локального варианта; у экспортного он nil.
 func (r *Recorder) Reader() *sdkmetric.ManualReader { return r.reader }
 
 // Shutdown освобождает provider изолированного тестового варианта. Рабочий
-// вариант provider не создаёт: освобождение выполняет Shutdown pipeline core.
+// вариант provider не создаёт: освобождение выполняет Shutdown pipeline.
 func (r *Recorder) Shutdown(ctx context.Context) error {
 	if r.provider == nil {
 		return nil

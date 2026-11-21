@@ -112,7 +112,7 @@ func (a *App) startServe(ctx context.Context) error {
 	return nil
 }
 
-// startTelemetry запускает OTLP pipeline core и активирует предметные
+// startTelemetry запускает OTLP pipeline и активирует предметные
 // инструменты модуля в meter общего provider.
 func (a *App) startTelemetry(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

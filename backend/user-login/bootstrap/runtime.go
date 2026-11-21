@@ -38,7 +38,7 @@ func (m *Module) Handler() http.Handler {
 }
 
 // Start активирует предметные инструменты и диагностику файлового входа
-// в meter общего pipeline core. Вызывается однократно до запуска входов.
+// в meter общего pipeline. Вызывается однократно до запуска входов.
 func (m *Module) Start(ctx context.Context, meter metric.Meter) error {
 	if err := ctx.Err(); err != nil {
 		return err

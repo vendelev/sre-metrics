@@ -135,12 +135,11 @@ linters:
                         - "${base-path}/cmd/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap приложения соединяет модули через публичные API core, user-login и общие пакеты pkg."
+                          desc: "bootstrap приложения соединяет user-login и общие пакеты pkg через публичные API."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/"
-                        - "github.com/vendelev/sre-metrics/core/bootstrap$"
                         - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/pkg/"
@@ -151,7 +150,7 @@ linters:
                         - "${base-path}/user-login/bootstrap/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap модуля не зависит от core и cmd: приложение соединяет модули через публичные API."
+                          desc: "bootstrap модуля не зависит от cmd: приложение соединяет компоненты через публичные API."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/user-login$"
@@ -163,8 +162,6 @@ linters:
                         - "${base-path}/user-login/internal/*.go"
                         - "${base-path}/user-login/internal/**/*.go"
                     deny:
-                        - pkg: "github.com/vendelev/sre-metrics/core"
-                          desc: "внутренние слои user-login не зависят от core: публичную сборку использует только корень модуля."
                         - pkg: "github.com/vendelev/sre-metrics/"
                           desc: "внутренние слои user-login могут импортировать только собственные пакеты и явно выделенные общие пакеты pkg."
                     allow:
@@ -173,17 +170,15 @@ linters:
                         - "github.com/vendelev/sre-metrics/user-login/"
                         - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
-                core-isolation:
+                otlpmetrics-isolation:
                     files:
-                        - "${base-path}/core/*.go"
-                        - "${base-path}/core/**/*.go"
+                        - "${base-path}/pkg/otlpmetrics/*.go"
+                        - "${base-path}/pkg/otlpmetrics/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "core не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
+                          desc: "otlpmetrics не импортирует функциональные модули; общие технические контракты разрешены только в pkg."
                     allow:
                         - "$gostd"
-                        - "github.com/vendelev/sre-metrics/core$"
-                        - "github.com/vendelev/sre-metrics/core/"
                         - "github.com/vendelev/sre-metrics/pkg/"
                     list-mode: lax
                 domain:

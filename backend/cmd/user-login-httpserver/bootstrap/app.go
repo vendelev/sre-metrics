@@ -13,17 +13,18 @@ import (
 	"go.uber.org/dig"
 
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
-	"github.com/vendelev/sre-metrics/core/bootstrap"
 	"github.com/vendelev/sre-metrics/pkg/clock"
-	pkgApi "github.com/vendelev/sre-metrics/pkg/httpserver/api"
-	pkgBootstrap "github.com/vendelev/sre-metrics/pkg/httpserver/bootstrap"
-	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
+	pkgHttpServerApi "github.com/vendelev/sre-metrics/pkg/httpserver/api"
+	pkgHttpServerBootstrap "github.com/vendelev/sre-metrics/pkg/httpserver/bootstrap"
+	pkgHttpServerConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
+	pkgOtlpApi "github.com/vendelev/sre-metrics/pkg/otlpmetrics/api"
+	pkgOtlpBootstrap "github.com/vendelev/sre-metrics/pkg/otlpmetrics/bootstrap"
 	pkgTask "github.com/vendelev/sre-metrics/pkg/task"
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
-	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
+	userloginConfig "github.com/vendelev/sre-metrics/user-login/config"
 )
 
-// Run загружает настройки процесса, функционального модуля и core, собирает
+// Run загружает настройки процесса, функционального модуля и HTTP-сервера, собирает
 // приложение и запускает его до отмены ctx или ошибки компонента. Успешная
 // остановка дожидается запросов и обработки очереди; сигналы обрабатывает main.
 func Run(ctx context.Context) error {
@@ -31,11 +32,11 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("конфигурация процесса: %w", err)
 	}
-	moduleCfg, err := userloginconfig.Load()
+	moduleCfg, err := userloginConfig.Load()
 	if err != nil {
 		return fmt.Errorf("конфигурация user-login: %w", err)
 	}
-	settings, err := pkgConfig.Load()
+	settings, err := pkgHttpServerConfig.Load()
 	if err != nil {
 		return err
 	}
@@ -47,14 +48,14 @@ func Run(ctx context.Context) error {
 	return app.run(ctx, nil)
 }
 
-// App владеет собранным приложением одного запуска: сервер и pipeline core,
+// App владеет собранным приложением одного запуска: сервер и pipeline метрик,
 // модуль user-login и настройки процесса. Сборка выполняется явной цепочкой
 // конструкторов в контейнере; контейнер только собирает объекты. Поля после
 // пустой строки — состояние протокола одного запуска: этот файл задаёт его
 // порядок и очистку.
 type App struct {
-	server  pkgApi.Server
-	metrics *bootstrap.Metrics
+	server  pkgHttpServerApi.Server
+	metrics pkgOtlpApi.Pipeline
 	module  *userlogin.Module
 	cfg     appconfig.Config
 	logger  *slog.Logger
@@ -67,12 +68,12 @@ type App struct {
 }
 
 // newApp собирает контейнер зависимостей: значения вызывающего кода,
-// технические компоненты core, компоненты модуля и соединение handler модуля
+// технические компоненты, компоненты модуля и соединение handler модуля
 // с общим сервером.
 func newApp(
 	process appconfig.Config,
-	moduleCfg *userloginconfig.Config,
-	settings pkgConfig.HTTP,
+	moduleCfg *userloginConfig.Config,
+	settings pkgHttpServerConfig.HTTP,
 	logger *slog.Logger,
 	domainClock clock.Clock,
 ) (*App, error) {
@@ -80,22 +81,21 @@ func newApp(
 	if err := errors.Join(
 		// Значения вызывающего кода.
 		container.Provide(func() appconfig.Config { return process }),
-		container.Provide(func() userloginconfig.Processing { return moduleCfg.Processing }),
-		container.Provide(func() userloginconfig.Inbox { return moduleCfg.Inbox }),
-		container.Provide(func() pkgConfig.HTTP { return settings }),
+		container.Provide(func() userloginConfig.Processing { return moduleCfg.Processing }),
+		container.Provide(func() userloginConfig.Inbox { return moduleCfg.Inbox }),
+		container.Provide(func() pkgHttpServerConfig.HTTP { return settings }),
 		container.Provide(func() *slog.Logger { return logger }),
 		container.Provide(func() clock.Clock { return domainClock }),
-		// Технические компоненты core.
-		bootstrap.Provide(container),
-		container.Provide(func() bootstrap.Views {
-			return bootstrap.Views{userlogin.HistogramView()}
+		// Технический pipeline с View модуля-потребителя.
+		container.Provide(func(logger *slog.Logger) pkgOtlpApi.Pipeline {
+			return pkgOtlpBootstrap.New(logger.With("component", "otel"), userlogin.HistogramView())
 		}),
 		// Компоненты модуля: Module публикует свои маршруты в группу приложения,
-		// rootHandler агрегирует их в единственный http.Handler core.
+		// rootHandler агрегирует их в единственный http.Handler сервера.
 		userlogin.Provide(container),
 		container.Provide(rootHandler),
-		container.Provide(func(cfg pkgConfig.HTTP, handler http.Handler, logger *slog.Logger) pkgApi.Server {
-			return pkgBootstrap.New(cfg, handler,
+		container.Provide(func(cfg pkgHttpServerConfig.HTTP, handler http.Handler, logger *slog.Logger) pkgHttpServerApi.Server {
+			return pkgHttpServerBootstrap.New(cfg, handler,
 				slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError))
 		}),
 	); err != nil {
@@ -103,8 +103,8 @@ func newApp(
 	}
 	var app *App
 	if err := container.Invoke(func(
-		server pkgApi.Server,
-		metrics *bootstrap.Metrics,
+		server pkgHttpServerApi.Server,
+		metrics pkgOtlpApi.Pipeline,
 		module *userlogin.Module,
 	) {
 		app = &App{
