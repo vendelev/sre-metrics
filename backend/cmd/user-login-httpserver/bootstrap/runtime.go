@@ -7,11 +7,12 @@ import (
 	"log/slog"
 	"net"
 
+	pkgTask "github.com/vendelev/sre-metrics/pkg/task"
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 )
 
 // taskResult сводит фоновые задачи запуска к общему виду для неблокирующего
-// чтения ошибок: HTTP-задачу публикует runtime core, остальные — модуль.
+// чтения ошибок: HTTP-задачу публикует приложение, остальные — модуль.
 type taskResult struct {
 	done <-chan struct{}
 	err  func() error // Читается только после закрытия done.
@@ -19,7 +20,7 @@ type taskResult struct {
 
 func (a *App) taskResults() []taskResult {
 	tasks := make([]taskResult, 0, 3)
-	if serve := a.server.ServeTask(); serve != nil {
+	if serve := a.serve; serve != nil {
 		tasks = append(tasks, taskResult{done: serve.Done(), err: serve.Err})
 	}
 	if task := a.module.WorkerTask(); task != nil {
@@ -42,7 +43,7 @@ func (a *App) run(ctx context.Context, ready func(net.Addr)) error {
 		select {
 		case <-ctx.Done():
 		case <-a.module.Failed():
-		case <-a.server.Failed():
+		case <-a.failed:
 		}
 		stopErr = a.stop(ctx)
 	}
@@ -87,10 +88,28 @@ func (a *App) startResources(ctx context.Context) error {
 	if err := a.module.StartInbox(ctx); err != nil {
 		return err
 	}
-	if err := a.server.StartServe(ctx); err != nil {
+	if err := a.startServe(ctx); err != nil {
 		return err
 	}
 	return a.announceReady(ctx)
+}
+
+// startServe запускает HTTP-задачу и сообщает владельцу о её ошибке.
+func (a *App) startServe(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.serve = pkgTask.New()
+	go func() {
+		a.serve.Complete(a.server.Serve())
+		if a.serve.Err() != nil {
+			select {
+			case a.failed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return nil
 }
 
 // startTelemetry запускает OTLP pipeline core и активирует предметные
@@ -143,7 +162,7 @@ func (a *App) shutdown(ctx context.Context) error {
 		defer stopDeadline()
 	}
 	var httpErr error
-	if a.server.ServeTask() != nil {
+	if a.serve != nil {
 		// При неуспехе Shutdown соединения закрываются принудительно внутри
 		// компонента, ошибки объединяются.
 		httpErr = a.server.Shutdown(ctx)
@@ -174,7 +193,7 @@ func (a *App) shutdown(ctx context.Context) error {
 // waitTasks дожидается завершения HTTP, обработки остатка очереди
 // воркером и файлового входа в пределах одного бюджета.
 func (a *App) waitTasks(ctx context.Context) error {
-	if serve := a.server.ServeTask(); serve != nil {
+	if serve := a.serve; serve != nil {
 		select {
 		case <-serve.Done():
 		case <-ctx.Done():

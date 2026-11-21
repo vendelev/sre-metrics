@@ -135,14 +135,12 @@ linters:
                         - "${base-path}/cmd/**/*.go"
                     deny:
                         - pkg: "github.com/vendelev/sre-metrics/"
-                          desc: "bootstrap приложения соединяет модули только через их публичные API: core/bootstrap, core/config, core/oteltest, user-login/bootstrap, user-login/config и общие пакеты pkg."
+                          desc: "bootstrap приложения соединяет модули через публичные API core, user-login и общие пакеты pkg."
                     allow:
                         - "$gostd"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver$"
                         - "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/"
                         - "github.com/vendelev/sre-metrics/core/bootstrap$"
-                        - "github.com/vendelev/sre-metrics/core/config$"
-                        - "github.com/vendelev/sre-metrics/core/oteltest$"
                         - "github.com/vendelev/sre-metrics/user-login/bootstrap$"
                         - "github.com/vendelev/sre-metrics/user-login/config$"
                         - "github.com/vendelev/sre-metrics/pkg/"

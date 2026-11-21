@@ -245,7 +245,7 @@ func TestAppInboxExportsSharedState(t *testing.T) {
 	c := &testClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 	app := testApp(t, process, cfg, settings, c)
 	running := runActual(t, app)
-	if app.module.InboxTask() == nil || app.server.ServeTask() == nil {
+	if app.module.InboxTask() == nil || app.serve == nil {
 		t.Fatal("готовность объявлена до запуска обоих входов")
 	}
 	now := c.Now()

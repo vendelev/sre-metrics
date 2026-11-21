@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/vendelev/sre-metrics/core/config"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
 )
 
 // Server владеет HTTP-ресурсами одного запуска. Конструктор только собирает
@@ -21,7 +21,7 @@ type Server struct {
 
 // New собирает сервер из готового handler и журнала http.Server; ресурсы
 // не открываются до Open.
-func New(settings config.HTTP, handler http.Handler, errorLog *log.Logger) *Server {
+func New(settings pkgConfig.HTTP, handler http.Handler, errorLog *log.Logger) *Server {
 	return &Server{
 		server: &http.Server{
 			Addr:              settings.Addr,

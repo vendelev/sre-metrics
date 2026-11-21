@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vendelev/sre-metrics/core/config"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
 )
 
 func newTestServer(t *testing.T, handler http.Handler) *Server {
 	t.Helper()
-	return New(config.HTTP{
+	return New(pkgConfig.HTTP{
 		Addr:              "127.0.0.1:0",
 		ReadHeaderTimeout: 50 * time.Millisecond,
 		ReadTimeout:       time.Second,
@@ -54,7 +54,7 @@ func assertListenerClosed(t *testing.T, srv *Server) {
 }
 
 func TestAddrNilBeforeOpen(t *testing.T) {
-	srv := New(config.HTTP{Addr: "127.0.0.1:0"}, http.NotFoundHandler(), nil)
+	srv := New(pkgConfig.HTTP{Addr: "127.0.0.1:0"}, http.NotFoundHandler(), nil)
 	if srv.Addr() != nil {
 		t.Fatal("адрес доступен до открытия listener")
 	}

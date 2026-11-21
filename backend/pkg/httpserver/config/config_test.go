@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vendelev/sre-metrics/core/config"
+	"github.com/vendelev/sre-metrics/pkg/httpserver/config"
 )
 
 func setupEnvironment(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 
@@ -13,8 +14,11 @@ import (
 
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
 	"github.com/vendelev/sre-metrics/core/bootstrap"
-	coreconfig "github.com/vendelev/sre-metrics/core/config"
 	"github.com/vendelev/sre-metrics/pkg/clock"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/httpserver/api"
+	pkgBootstrap "github.com/vendelev/sre-metrics/pkg/httpserver/bootstrap"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
+	pkgTask "github.com/vendelev/sre-metrics/pkg/task"
 	userlogin "github.com/vendelev/sre-metrics/user-login/bootstrap"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
@@ -31,7 +35,7 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("конфигурация user-login: %w", err)
 	}
-	settings, err := coreconfig.Load()
+	settings, err := pkgConfig.Load()
 	if err != nil {
 		return err
 	}
@@ -49,12 +53,14 @@ func Run(ctx context.Context) error {
 // пустой строки — состояние протокола одного запуска: этот файл задаёт его
 // порядок и очистку.
 type App struct {
-	server  *bootstrap.Server
+	server  pkgApi.Server
 	metrics *bootstrap.Metrics
 	module  *userlogin.Module
 	cfg     appconfig.Config
 	logger  *slog.Logger
 
+	serve    *pkgTask.Task
+	failed   chan struct{}
 	ready    func(net.Addr)
 	stopOnce sync.Once
 	stopErr  error // Читается после stopOnce.Do, включая конкурентный повторный вызов.
@@ -66,7 +72,7 @@ type App struct {
 func newApp(
 	process appconfig.Config,
 	moduleCfg *userloginconfig.Config,
-	settings coreconfig.HTTP,
+	settings pkgConfig.HTTP,
 	logger *slog.Logger,
 	domainClock clock.Clock,
 ) (*App, error) {
@@ -76,7 +82,7 @@ func newApp(
 		container.Provide(func() appconfig.Config { return process }),
 		container.Provide(func() userloginconfig.Processing { return moduleCfg.Processing }),
 		container.Provide(func() userloginconfig.Inbox { return moduleCfg.Inbox }),
-		container.Provide(func() coreconfig.HTTP { return settings }),
+		container.Provide(func() pkgConfig.HTTP { return settings }),
 		container.Provide(func() *slog.Logger { return logger }),
 		container.Provide(func() clock.Clock { return domainClock }),
 		// Технические компоненты core.
@@ -88,17 +94,22 @@ func newApp(
 		// rootHandler агрегирует их в единственный http.Handler core.
 		userlogin.Provide(container),
 		container.Provide(rootHandler),
+		container.Provide(func(cfg pkgConfig.HTTP, handler http.Handler, logger *slog.Logger) pkgApi.Server {
+			return pkgBootstrap.New(cfg, handler,
+				slog.NewLogLogger(logger.With("component", "http").Handler(), slog.LevelError))
+		}),
 	); err != nil {
 		return nil, err
 	}
 	var app *App
 	if err := container.Invoke(func(
-		server *bootstrap.Server,
+		server pkgApi.Server,
 		metrics *bootstrap.Metrics,
 		module *userlogin.Module,
 	) {
 		app = &App{
 			server:  server,
+			failed:  make(chan struct{}, 1),
 			metrics: metrics,
 			module:  module,
 			cfg:     process,

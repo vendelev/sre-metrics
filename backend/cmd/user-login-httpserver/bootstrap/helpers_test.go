@@ -11,8 +11,8 @@ import (
 	"time"
 
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
-	"github.com/vendelev/sre-metrics/core/config"
 	"github.com/vendelev/sre-metrics/pkg/clock"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
 	"github.com/vendelev/sre-metrics/pkg/oteltest"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
@@ -61,7 +61,7 @@ func (c *barrierClock) Now() time.Time {
 
 // actualConfig настраивает настоящее окружение SDK; вызывающие тесты не
 // запускаются параллельно.
-func actualConfig(t *testing.T, r *oteltest.Receiver) (*userloginconfig.Config, config.HTTP, appconfig.Config) {
+func actualConfig(t *testing.T, r *oteltest.Receiver) (*userloginconfig.Config, pkgConfig.HTTP, appconfig.Config) {
 	t.Helper()
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", r.URL())
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "200")
@@ -74,7 +74,7 @@ func actualConfig(t *testing.T, r *oteltest.Receiver) (*userloginconfig.Config, 
 	)
 	cfg := userloginconfig.Default()
 	cfg.Inbox.Dir = filepath.Join(t.TempDir(), "inbox")
-	settings := config.Default()
+	settings := pkgConfig.Default()
 	settings.Addr = "127.0.0.1:0"
 	settings.ReadHeaderTimeout = 50 * time.Millisecond
 	settings.ReadTimeout, settings.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
@@ -90,7 +90,7 @@ func testApp(
 	t *testing.T,
 	process appconfig.Config,
 	cfg *userloginconfig.Config,
-	settings config.HTTP,
+	settings pkgConfig.HTTP,
 	c clock.Clock,
 ) *App {
 	t.Helper()

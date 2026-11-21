@@ -9,9 +9,8 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
-// HTTP содержит параметры net/http Server. Настройки читаются из окружения
-// ядра один раз при старте; формат адреса проверяет httpserver при открытии
-// listener. Значения уже проверены Validate — компоненты доверяют им.
+// HTTP содержит параметры net/http Server. Формат адреса проверяется при
+// открытии listener. Компонент ожидает значения, проверенные Validate.
 type HTTP struct {
 	Addr              string        `env:"CORE_HTTP_LISTEN_ADDR"`
 	ReadHeaderTimeout time.Duration `env:"CORE_HTTP_READ_HEADER_TIMEOUT"`
@@ -20,7 +19,7 @@ type HTTP struct {
 	IdleTimeout       time.Duration `env:"CORE_HTTP_IDLE_TIMEOUT"`
 }
 
-// Default возвращает стартовые настройки ядра: listener :8080 и тайм-ауты
+// Default возвращает стартовые настройки: listener :8080 и тайм-ауты
 // net/http по умолчанию контракта.
 func Default() HTTP {
 	return HTTP{
@@ -32,7 +31,7 @@ func Default() HTTP {
 	}
 }
 
-// Load читает настройки ядра из окружения. Стандартные OTEL_* читает сам SDK.
+// Load читает настройки HTTP из окружения. Стандартные OTEL_* читает сам SDK.
 func Load() (HTTP, error) {
 	cfg := Default()
 	if err := env.Parse(&cfg); err != nil {

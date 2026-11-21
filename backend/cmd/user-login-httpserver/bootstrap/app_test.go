@@ -16,10 +16,35 @@ import (
 	"time"
 
 	appconfig "github.com/vendelev/sre-metrics/cmd/user-login-httpserver/config"
-	coreconfig "github.com/vendelev/sre-metrics/core/config"
+	pkgApi "github.com/vendelev/sre-metrics/pkg/httpserver/api"
+	pkgConfig "github.com/vendelev/sre-metrics/pkg/httpserver/config"
 	"github.com/vendelev/sre-metrics/pkg/oteltest"
 	userloginconfig "github.com/vendelev/sre-metrics/user-login/config"
 )
+
+// Ошибку Serve трудно воспроизвести через настоящий listener без гонки с Shutdown.
+type failingServeServer struct {
+	pkgApi.Server
+	err error
+}
+
+func (s failingServeServer) Serve() error { return s.err }
+
+func TestServeFailureNotifiesOwner(t *testing.T) {
+	want := errors.New("ошибка Serve")
+	app := &App{server: failingServeServer{err: want}, failed: make(chan struct{}, 1)}
+	if err := app.startServe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-app.failed:
+	case <-time.After(time.Second):
+		t.Fatal("ошибка Serve не передана владельцу")
+	}
+	if !errors.Is(app.serve.Err(), want) {
+		t.Fatalf("потерян результат Serve: %v", app.serve.Err())
+	}
+}
 
 func TestAppSharesState(t *testing.T) {
 	r := oteltest.NewReceiver(t)
@@ -240,7 +265,7 @@ func TestAppRunBindFailure(t *testing.T) {
 		!strings.Contains(err.Error(), "запуск HTTP") {
 		t.Fatalf("ошибка занятого адреса потеряна: %v", err)
 	}
-	if ready || r.Calls() != 0 || app.module.WorkerTask() != nil || app.server.ServeTask() != nil {
+	if ready || r.Calls() != 0 || app.module.WorkerTask() != nil || app.serve != nil {
 		t.Fatal("после ошибки bind запущены компоненты или объявлена готовность")
 	}
 }
@@ -275,7 +300,7 @@ func TestAppInboxUnavailableBeforeReady(t *testing.T) {
 	if _, ok := errors.AsType[*os.PathError](err); !ok {
 		t.Fatalf("ошибка доступа к каталогу не сохранена: %v", err)
 	}
-	if ready || app.server.ServeTask() != nil {
+	if ready || app.serve != nil {
 		t.Fatal("ошибка каталога не остановила запуск до HTTP и готовности")
 	}
 	assertListenerClosed(t, app)
@@ -365,7 +390,7 @@ func TestAppConstructorError(t *testing.T) {
 	app, err := newApp(
 		appconfig.Default(),
 		&cfg,
-		coreconfig.Default(),
+		pkgConfig.Default(),
 		slog.New(slog.DiscardHandler),
 		&testClock{now: time.Now()},
 	)
@@ -382,7 +407,7 @@ func TestAppInboxConstructorError(t *testing.T) {
 	cfg := userloginconfig.Default()
 	cfg.Inbox.Dir = filepath.Join(t.TempDir(), "inbox")
 	cfg.Inbox.ScanInterval = 0
-	app, err := newApp(appconfig.Default(), &cfg, coreconfig.Default(),
+	app, err := newApp(appconfig.Default(), &cfg, pkgConfig.Default(),
 		slog.New(slog.DiscardHandler), &testClock{now: time.Now()})
 	if app != nil || err == nil || !strings.Contains(err.Error(), "сборка файлового входа") {
 		t.Fatalf("ошибка сборки файлового входа потеряна: %v", err)
@@ -413,7 +438,7 @@ func TestAppStartupCancellationBetweenPhases(t *testing.T) {
 			}{
 				{"после bind", app.server.Open}, {"после SDK", app.startTelemetry},
 				{"после воркера", app.module.StartWorker}, {"после файлового входа", app.module.StartInbox},
-				{"после HTTP", app.server.StartServe},
+				{"после HTTP", app.startServe},
 			}
 			for _, step := range phases {
 				if err := step.run(ctx); err != nil {
